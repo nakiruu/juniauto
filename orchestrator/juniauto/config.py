@@ -171,6 +171,11 @@ class UniverseConfig(BaseModel):
     min_market_cap: int
     exchanges: list[str]
     include_etfs: bool
+    # Optional explicit seed list. When set, the decision cycle uses these
+    # symbols directly and skips the full universe builder. Useful for MVP
+    # and for pinning a stable universe. Empty list = fall back to the
+    # tape-filtered universe builder.
+    symbols: list[str] = []
 
 
 class AlpacaConfig(BaseModel):

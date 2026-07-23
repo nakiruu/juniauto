@@ -138,6 +138,48 @@ universe:
   min_market_cap: 500000000
   exchanges: [NYSE, NASDAQ]
   include_etfs: true
+  # MVP seed list. Set to [] to fall back to the full tape-filtered universe
+  # builder (fetches every active NYSE/NASDAQ equity, ~11k names — slow).
+  # 30 liquid mega-caps + broad-market ETFs — enough to exercise the full
+  # pipeline without hammering Alpaca IEX rate limits.
+  symbols:
+    # Broad-market + sector ETFs
+    - SPY
+    - QQQ
+    - IWM
+    - DIA
+    - XLK
+    - XLF
+    - XLE
+    - XLV
+    # Mega-cap tech
+    - AAPL
+    - MSFT
+    - GOOGL
+    - AMZN
+    - META
+    - NVDA
+    - TSLA
+    - AMD
+    - AVGO
+    - ORCL
+    # Financials
+    - JPM
+    - BAC
+    - GS
+    # Consumer
+    - COST
+    - WMT
+    - HD
+    - MCD
+    # Industrials / energy
+    - CAT
+    - GE
+    - XOM
+    - CVX
+    # Healthcare
+    - LLY
+    - UNH
 
 # --- Data feeds ---
 alpaca:

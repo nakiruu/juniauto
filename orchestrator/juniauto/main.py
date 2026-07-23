@@ -103,25 +103,45 @@ class JuniAuto:
     async def _daily_decision_cycle(self) -> None:
         """§3.2 seven-step decision cycle.
 
-        1) refresh observations
-        2) source-package selector
-        3) target gateway → candidates
-        4) provenance membership → prior action edge
-        5) execution gate (posterior + costs → action)
-        6) order routing
-        7) outcome recording
+        1) refresh observations                 (wired: bars/quotes/fundamentals)
+        2) source-package selector              (stub)
+        3) target gateway → candidates          (stub)
+        4) provenance membership → prior action (stub)
+        5) execution gate (posterior + costs)   (stub)
+        6) order routing                        (stub)
+        7) outcome recording                    (stub)
         """
-        log.info("cycle_start", ts=datetime.now(tz=ET).isoformat())
+        now = datetime.now(tz=ET)
+        log.info("cycle_start", ts=now.isoformat())
 
         # Guardrail: don't trade if PDT will block us for the whole cycle.
         acct = self.alpaca.get_account()
-        dt_count = self.pdt.count_in_window()
-        log.info("account", equity=acct["equity"], cash=acct["cash"], day_trade_count=dt_count, paper=self.cfg.alpaca.paper)
+        dt_count = self.pdt.count_in_window(now)
+        log.info(
+            "account",
+            equity=acct["equity"],
+            cash=acct["cash"],
+            day_trade_count=dt_count,
+            paper=self.cfg.alpaca.paper,
+        )
 
-        # TODO: full pipeline wires in once engine bindings + signal families are online.
-        # For now, log the intended step sequence so the scheduler wiring is visible.
+        # --- Step 1: refresh observations (§1.1-§1.3, §3.2 step 1) ---
+        symbols = self._resolve_universe()
+        log.info("step1_universe", n_symbols=len(symbols), source="config_seed" if self.cfg.universe.symbols else "tape_filter")
+        try:
+            snap = self.aggregator.snapshot(symbols, now)
+            log.info(
+                "step1_snapshot",
+                bars_symbols=len(snap.bars),
+                quotes_symbols=len(snap.quotes),
+                fundamentals_symbols=len(snap.fundamentals),
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("step1_snapshot_failed", error=str(e), error_type=type(e).__name__)
+            return  # can't proceed without observations
+
+        # Steps 2-7 still stubbed — next wiring commits.
         for step in [
-            "1_refresh_observations",
             "2_source_selector",
             "3_target_gateway",
             "4_provenance_membership",
@@ -132,6 +152,21 @@ class JuniAuto:
             log.info("cycle_step_stub", step=step)
 
         log.info("cycle_end")
+
+    def _resolve_universe(self) -> list[str]:
+        """Return the symbol list for this decision cycle.
+
+        Prefer an explicit config seed list; fall back to the full tape-filtered
+        universe builder only if the seed is empty (that path is heavy and
+        typically only run in offline research).
+        """
+        if self.cfg.universe.symbols:
+            return list(self.cfg.universe.symbols)
+        # Full-universe fallback intentionally deferred — the tape filter
+        # needs last_close + ADV + fundamentals for every candidate, which
+        # is expensive. Callers who want it can wire it here.
+        log.warning("universe_seed_empty_and_full_filter_not_wired")
+        return []
 
     async def _resolution_loop(self) -> None:
         """§3.2 slow-feedback loop.
