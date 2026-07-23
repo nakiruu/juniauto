@@ -82,6 +82,12 @@ class JuniAuto:
         self._sched.start()
         log.info("scheduler_started", jobs=[j.id for j in self._sched.get_jobs()])
 
+        # Snapshot immediately at boot so Grafana has data without waiting an hour.
+        try:
+            self._persist_account_snapshot()
+        except Exception as e:  # noqa: BLE001
+            log.warning("boot_snapshot_failed", error=str(e))
+
         await self._stop.wait()
         await self._shutdown()
 
@@ -128,10 +134,67 @@ class JuniAuto:
         log.info("cycle_end")
 
     async def _resolution_loop(self) -> None:
-        """Resolve stale executions → realized_return_bps, update shadow (§2.41)."""
+        """§3.2 slow-feedback loop.
+
+        Persists account + open positions snapshot every hour so Grafana
+        panels stay current. Once step-7 wiring lands, this will also resolve
+        stale executions into realized_return_bps and update the shadow
+        monitor (§2.41).
+        """
         log.info("resolution_start")
-        # TODO
+        try:
+            self._persist_account_snapshot()
+        except Exception as e:  # noqa: BLE001 — never let the loop die
+            log.error("resolution_snapshot_failed", error=str(e), error_type=type(e).__name__)
         log.info("resolution_end")
+
+    def _persist_account_snapshot(self) -> None:
+        """Snapshot equity/cash/PDT + open positions to QuestDB (§3.1)."""
+        now = datetime.now(tz=ET)
+        acct = self.alpaca.get_account()
+        positions = self.alpaca.get_positions()
+        dt_count = self.pdt.count_in_window(now)
+        unrealized_total = sum(p["unrealized_pl"] for p in positions)
+
+        log.info(
+            "snapshot",
+            equity=acct["equity"],
+            cash=acct["cash"],
+            buying_power=acct["buying_power"],
+            day_trade_count=dt_count,
+            position_count=len(positions),
+            unrealized_pl=unrealized_total,
+            paper=self.cfg.alpaca.paper,
+        )
+
+        pdt_blocked = dt_count >= self.cfg.model.max_day_trades_rolling_5d
+        with self.db.sender() as s:
+            s.row(
+                "account_state",
+                columns={
+                    "equity": acct["equity"],
+                    "cash": acct["cash"],
+                    "buying_power": acct["buying_power"],
+                    "day_trade_count": dt_count,
+                    "position_count": len(positions),
+                    "unrealized_pl": unrealized_total,
+                    "realized_pl": 0.0,  # Alpaca account API does not expose realized PL directly
+                    "pdt_blocked": pdt_blocked,
+                },
+                at=now,
+            )
+            for p in positions:
+                s.row(
+                    "positions",
+                    symbols={"symbol": p["symbol"], "side": p["side"]},
+                    columns={
+                        "qty": p["qty"],
+                        "avg_entry_price": p["avg_entry_price"],
+                        "market_value": p["market_value"],
+                        "unrealized_pl": p["unrealized_pl"],
+                    },
+                    at=now,
+                )
 
 
 def _install_signal_handlers(app: JuniAuto, loop: asyncio.AbstractEventLoop) -> None:
