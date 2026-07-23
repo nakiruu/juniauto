@@ -17,11 +17,21 @@ def configure_logging(level: str = "INFO", json_file: str | None = None) -> None
         level=lvl,
     )
     if json_file:
-        Path(json_file).parent.mkdir(parents=True, exist_ok=True)
-        file_h = logging.FileHandler(json_file, encoding="utf-8")
-        file_h.setLevel(lvl)
-        file_h.setFormatter(logging.Formatter("%(message)s"))
-        logging.getLogger().addHandler(file_h)
+        # File logging is a nice-to-have; stdout logging is authoritative. If the
+        # host bind-mount is unwritable (Unraid appdata often is until chowned),
+        # warn to stderr and continue. Never crash the container over log files.
+        try:
+            Path(json_file).parent.mkdir(parents=True, exist_ok=True)
+            file_h = logging.FileHandler(json_file, encoding="utf-8")
+            file_h.setLevel(lvl)
+            file_h.setFormatter(logging.Formatter("%(message)s"))
+            logging.getLogger().addHandler(file_h)
+        except (PermissionError, OSError) as e:
+            print(
+                f"WARN: file logging disabled ({json_file}): {type(e).__name__}: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     structlog.configure(
         processors=[

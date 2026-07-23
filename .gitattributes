@@ -1,0 +1,7 @@
+# Force LF for shell scripts and Dockerfiles — CRLF breaks them at runtime on Linux.
+*.sh          text eol=lf
+Dockerfile*   text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Default: let git handle line endings per-platform.
+*             text=auto

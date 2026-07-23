@@ -64,16 +64,21 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY orchestrator/ ./
 COPY config/ /app/config/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # System user (UID auto-assigned below 1000) — avoids collision with Ubuntu
 # 24.04's pre-existing `ubuntu` user at UID 1000. No login, no shell; juni
-# only ever runs the Python entrypoint under tini.
+# only ever runs the Python entrypoint under tini + docker-entrypoint.sh.
 RUN groupadd --system juni && \
     useradd --system --gid juni --home-dir /app --no-create-home \
             --shell /usr/sbin/nologin juni && \
     mkdir -p /app/logs /app/cache && \
-    chown -R juni:juni /app /opt/juniauto
-USER juni
+    chown -R juni:juni /app /opt/juniauto && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# Container starts as root so docker-entrypoint.sh can chown bind-mounted
+# volumes; the entrypoint then drops privileges to `juni` via runuser before
+# exec'ing the app. Do NOT add a `USER juni` line here — it would prevent
+# the chown from working.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python3", "-m", "juniauto.main", "--config", "/app/config/production.yaml"]
