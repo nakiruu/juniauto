@@ -10,7 +10,11 @@ datasources:
     isDefault: false
     editable: true
     secureJsonData:
-      password: ${GRAFANA_QUESTDB_PW:-quest}
+      # Grafana provisioning supports $VAR / ${VAR} / $__env{VAR}. It does NOT
+      # support bash-style defaults like ${VAR:-fallback} — that literal string
+      # would be sent as the password. Docker-compose already provides the
+      # default at the env-var layer, so plain $GRAFANA_QUESTDB_PW is safe.
+      password: $GRAFANA_QUESTDB_PW
     jsonData:
       sslmode: disable
       postgresVersion: 1200
