@@ -273,7 +273,7 @@
       "id": 6,
       "type": "table",
       "title": "Open positions (latest snapshot)",
-      "description": "See docs/knowledge-base/part6-operational.md § 3.6 — no positions table; derived from executions",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 — latest row per symbol from the positions table",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
       "interval": "",
@@ -298,7 +298,7 @@
           "datasource": {"type": "postgres", "uid": "QuestDB"},
           "format": "table",
           "rawQuery": true,
-          "rawSql": "-- Placeholder: no positions table; derived from executions rolling net qty. Replace with live positions view when available.\nSELECT symbol,\n       SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) AS qty,\n       AVG(fill_price) AS avg_entry_price,\n       SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) * LAST(fill_price) AS market_value,\n       NULL AS unrealized_pl\n  FROM executions\n GROUP BY symbol\nHAVING SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) <> 0"
+          "rawSql": "SELECT symbol, side, qty, avg_entry_price, market_value, unrealized_pl\n  FROM positions\n LATEST ON ts PARTITION BY symbol\n WHERE qty != 0"
         }
       ]
     },
