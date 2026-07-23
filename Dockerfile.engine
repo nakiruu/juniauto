@@ -65,7 +65,12 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 COPY orchestrator/ ./
 COPY config/ /app/config/
 
-RUN useradd --uid 1000 --create-home --shell /bin/bash juni && \
+# System user (UID auto-assigned below 1000) — avoids collision with Ubuntu
+# 24.04's pre-existing `ubuntu` user at UID 1000. No login, no shell; juni
+# only ever runs the Python entrypoint under tini.
+RUN groupadd --system juni && \
+    useradd --system --gid juni --home-dir /app --no-create-home \
+            --shell /usr/sbin/nologin juni && \
     mkdir -p /app/logs /app/cache && \
     chown -R juni:juni /app /opt/juniauto
 USER juni
