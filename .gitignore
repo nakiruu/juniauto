@@ -1,3 +1,11 @@
+# =============================================================================
+# NOTE ON PATTERNS
+# Directory names without a leading slash match at ANY depth in the tree.
+# `data/` alone would silently drop engine/src/data/, orchestrator/juniauto/data/
+# and engine/include/juniauto/data/ — which are all real source dirs.
+# Anything meant to match only at the repo root uses a leading slash: /data/.
+# =============================================================================
+
 # --- Secrets & env ---
 .env
 .env.*
@@ -12,15 +20,14 @@ __pycache__/
 *.egg-info/
 *.egg
 .venv/
-venv/
-env/
+/venv/
+/env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
-htmlcov/
-dist/
-build/
+/htmlcov/
+/dist/
 *.so
 !engine/**/*.so
 
@@ -38,16 +45,15 @@ CMakeFiles/
 CMakeUserPresets.json
 compile_commands.json
 
-# --- Data & artifacts ---
-data/
-logs/
-cache/
+# --- Runtime data & artifacts (root-only; anchored with leading slash) ---
+/data/
+/logs/
+/cache/
+/grafana-data/
+/prometheus-data/
+/questdb/
 *.parquet
 *.duckdb
-grafana-data/
-prometheus-data/
-questdb/
-!config/questdb.conf
 
 # --- Editor / OS ---
 .vscode/
