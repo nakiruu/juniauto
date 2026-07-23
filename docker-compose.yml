@@ -18,11 +18,14 @@ services:
       - QDB_PG_USER=${DB_USER:-admin}
       - QDB_PG_PASSWORD=${DB_PASSWORD:-quest}
     restart: unless-stopped
+    # bash /dev/tcp is a shell-builtin TCP probe — no dependency on wget/curl,
+    # which are not present in QuestDB's eclipse-temurin JRE base image.
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9000 >/dev/null 2>&1 || exit 1"]
-      interval: 15s
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000' 2>/dev/null || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 6
+      start_period: 30s
     networks: [quant-net]
 
   engine:
