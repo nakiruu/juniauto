@@ -39,11 +39,9 @@ def _interp(node: Any) -> Any:
 # ---------- Sections ----------
 class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    name: str
-    version: str
-    environment: str
-    timezone: str
-    # applied model params (§2.19)
+    # applied model params (§2.19). System-level identity (name/version/timezone)
+    # lives in SystemConfig above — do NOT duplicate here, YAML doesn't carry them
+    # in this section and pydantic will reject the whole load.
     target_cadence: str
     decision_time_et: str
     source_selection_mode: str
