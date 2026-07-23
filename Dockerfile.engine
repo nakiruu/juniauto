@@ -19,6 +19,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /build
 COPY engine/ ./engine/
+
+# Fail fast if the build context is missing sources (usually a stale
+# BuildKit cache from a prior build made before the .cpp files were written).
+RUN set -eux; \
+    n=$(find engine/src -name "*.cpp" | wc -l); \
+    echo "engine/src .cpp file count: $n"; \
+    find engine/src -name "*.cpp" | sort; \
+    if [ "$n" -lt 20 ]; then \
+        echo "FATAL: expected >=20 .cpp files, found $n. Rebuild with:  docker compose build --no-cache engine"; \
+        exit 1; \
+    fi
+
 RUN pip3 install --no-cache-dir --break-system-packages "pybind11[global]==2.13.6"
 RUN cmake -S engine -B engine/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
