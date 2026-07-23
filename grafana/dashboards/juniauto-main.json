@@ -1,0 +1,675 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Shadow promotions",
+        "datasource": {
+          "type": "postgres",
+          "uid": "QuestDB"
+        },
+        "enable": true,
+        "iconColor": "rgba(0, 200, 0, 1)",
+        "rawQuery": "SELECT ts AS time, horizon AS text, 'promotion' AS tags FROM shadow_deltas WHERE promotion_ready = true AND $__timeFilter(ts)",
+        "target": {
+          "rawSql": "SELECT ts AS time, horizon AS text, 'promotion' AS tags FROM shadow_deltas WHERE promotion_ready = true AND $__timeFilter(ts)",
+          "format": "table"
+        }
+      }
+    ]
+  },
+  "description": "JuniAuto main operational dashboard — see docs/knowledge-base/part6-operational.md § 3.6 and § 3.10",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "juniauto-main",
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "id": 100,
+      "panels": [],
+      "title": "System health",
+      "type": "row"
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "PDT day-trade count (rolling 5d)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 1},
+      "interval": "auto",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "max": 3,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 3}
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT day_trade_count FROM account_state ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Shadow monitor: promotion by horizon",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§2.41 promotion gate)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 6, "w": 12, "x": 6, "y": 1},
+      "interval": "auto",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "HOLD", "color": "yellow"}, "1": {"text": "READY", "color": "green"}}}
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "yellow", "value": null},
+              {"color": "green", "value": 1}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT horizon, CASE WHEN promotion_ready THEN 1 ELSE 0 END AS ready FROM shadow_deltas WHERE horizon IN ('1d','2-3d','1wk','2wk') LATEST ON ts PARTITION BY horizon"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Position count (live)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 1},
+      "interval": "auto",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "blue", "value": null}
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT position_count FROM account_state ORDER BY ts DESC LIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Account equity",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.1 account snapshots)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, equity FROM account_state WHERE $__timeFilter(ts) ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Cash and buying power",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "currencyUSD",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, cash AS \"cash\", buying_power AS \"buying_power\" FROM account_state WHERE $__timeFilter(ts) ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15},
+      "id": 101,
+      "panels": [],
+      "title": "Execution",
+      "type": "row"
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Open positions (latest snapshot)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 — no positions table; derived from executions",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "displayMode": "auto"},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "avg_entry_price"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "market_value"}, "properties": [{"id": "unit", "value": "currencyUSD"}]},
+          {"matcher": {"id": "byName", "options": "unrealized_pl"}, "properties": [{"id": "unit", "value": "currencyUSD"}]}
+        ]
+      },
+      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "-- Placeholder: no positions table; derived from executions rolling net qty. Replace with live positions view when available.\nSELECT symbol,\n       SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) AS qty,\n       AVG(fill_price) AS avg_entry_price,\n       SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) * LAST(fill_price) AS market_value,\n       NULL AS unrealized_pl\n  FROM executions\n GROUP BY symbol\nHAVING SUM(CASE WHEN side = 'buy' THEN qty ELSE -qty END) <> 0"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "histogram",
+      "title": "Net edge distribution (executed)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (net edge = gross - all costs)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
+      "interval": "auto",
+      "options": {
+        "bucketSize": 5,
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"fillOpacity": 60, "lineWidth": 1},
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT net_edge_bps FROM gateway_actions WHERE executed = true AND $__timeFilter(ts)"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "piechart",
+      "title": "Cost component breakdown (bps sum)",
+      "description": "See docs/knowledge-base/part3-costs.md §2.9–2.18",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 25},
+      "interval": "auto",
+      "options": {
+        "displayLabels": ["name", "percent"],
+        "legend": {"displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"]},
+        "pieType": "donut",
+        "reduceOptions": {"calcs": ["sum"], "fields": "", "values": false},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"hideFrom": {"legend": false, "tooltip": false, "viz": false}},
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT SUM(entry_cost_bps)    AS entry_cost_bps,\n       SUM(exit_cost_reserved) AS exit_cost_reserved,\n       SUM(queue_delay_bps)    AS queue_delay_bps,\n       SUM(action_memory_bps)  AS action_memory_bps\n  FROM gateway_actions\n WHERE executed = true AND $__timeFilter(ts)"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Realized vs modeled edge (bps)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.2 execution telemetry)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 25},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "blue", "value": null}]
+          }
+        },
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "model_edge_bps"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "blue"}}]},
+          {"matcher": {"id": "byName", "options": "realized_return_bps"}, "properties": [{"id": "color", "value": {"mode": "fixed", "fixedColor": "orange"}}]}
+        ]
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, model_edge_bps, realized_return_bps FROM executions WHERE $__timeFilter(ts) ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Shadow posterior delta by horizon",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§2.41 shadow monitor)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 34},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "auto",
+            "spanNulls": true
+          },
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{"color": "green", "value": null}]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, horizon AS metric, delta_post AS value FROM shadow_deltas WHERE horizon IN ('1d','2-3d','1wk','2wk') AND $__timeFilter(ts) ORDER BY ts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 43},
+      "id": 102,
+      "panels": [],
+      "title": "Prometheus signals",
+      "type": "row"
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Equity (Prometheus gauge)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 44},
+      "interval": "auto",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "equity_gauge",
+          "legendFormat": "equity",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Cash (Prometheus gauge)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 44},
+      "interval": "auto",
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "cash_gauge",
+          "legendFormat": "cash",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Day-trade count (Prometheus)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.1 PDT max 3/5d)",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 44},
+      "interval": "auto",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "max": 3,
+          "min": 0,
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 3}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "day_trade_count_gauge",
+          "legendFormat": "day_trades",
+          "range": false,
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Decision cycle duration (p50/p95)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 44},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "s",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "histogram_quantile(0.50, sum(rate(decision_cycle_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "histogram_quantile(0.95, sum(rate(decision_cycle_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Net edge histogram rate (Prometheus)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.6",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 50},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "unit": "none",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "histogram_quantile(0.50, sum(rate(net_edge_bps_bucket[15m])) by (le))",
+          "legendFormat": "net_edge p50",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {"type": "prometheus", "uid": "Prometheus"},
+          "expr": "histogram_quantile(0.95, sum(rate(net_edge_bps_bucket[15m])) by (le))",
+          "legendFormat": "net_edge p95",
+          "range": true
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["juniauto"],
+  "templating": {"list": []},
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "America/New_York",
+  "title": "JuniAuto — Main",
+  "version": 1,
+  "weekStart": ""
+}

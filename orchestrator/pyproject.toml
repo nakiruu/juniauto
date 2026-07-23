@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "juniauto"
+version = "0.1.0"
+description = "JuniAuto orchestrator — Python layer of the JuniAuto autotrading system"
+readme = "../README.md"
+requires-python = ">=3.11"
+authors = [{ name = "JuniAuto" }]
+license = { text = "Proprietary" }
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["juniauto*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]  # line-length handled by formatter
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+testpaths = ["tests"]

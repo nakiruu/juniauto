@@ -1,0 +1,93 @@
+# Host-side ports use the uncommon 31xxx range so services don't collide with
+# common developer ports (3000, 8080, 9090, ...) and don't fingerprint obviously.
+# Container-side ports are unchanged; internal service-to-service traffic on
+# the `quant-net` bridge continues to use standard ports.
+
+services:
+  questdb:
+    image: questdb/questdb:8.1.1
+    container_name: juniauto-questdb
+    ports:
+      - "31812:8812"   # host 31812 -> container 8812 (Postgres wire)
+      - "31900:9000"   # host 31900 -> container 9000 (REST + web console)
+      - "31909:9009"   # host 31909 -> container 9009 (ILP TCP ingest)
+    volumes:
+      - ./data/questdb:/var/lib/questdb
+      - ./config/questdb.conf:/var/lib/questdb/conf/server.conf:ro
+    environment:
+      - QDB_PG_USER=${DB_USER:-admin}
+      - QDB_PG_PASSWORD=${DB_PASSWORD:-quest}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000 >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks: [quant-net]
+
+  engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.engine
+    container_name: juniauto-engine
+    depends_on:
+      questdb:
+        condition: service_healthy
+    ports:
+      - "31091:9091"   # host 31091 -> container 9091 (Prometheus metrics endpoint)
+    environment:
+      # Alpaca — both key pairs passed; ALPACA_PAPER decides which pair the app uses.
+      - ALPACA_PAPER=${ALPACA_PAPER:-true}
+      - ALPACA_PAPER_API_KEY=${ALPACA_PAPER_API_KEY:-}
+      - ALPACA_PAPER_SECRET_KEY=${ALPACA_PAPER_SECRET_KEY:-}
+      - ALPACA_LIVE_API_KEY=${ALPACA_LIVE_API_KEY:-}
+      - ALPACA_LIVE_SECRET_KEY=${ALPACA_LIVE_SECRET_KEY:-}
+      - ALPACA_FEED=${ALPACA_FEED:-iex}
+      # DB (internal Docker network — standard ports)
+      - DB_HOST=questdb
+      - DB_PORT=8812
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASSWORD=${DB_PASSWORD:-quest}
+      - DB_NAME=${DB_NAME:-qdb}
+      # Misc
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - FED_FUNDS_RATE=${FED_FUNDS_RATE:-0.045}
+    volumes:
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+      - ./data/cache:/app/cache
+    restart: unless-stopped
+    networks: [quant-net]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: juniauto-prometheus
+    ports:
+      - "31090:9090"   # host 31090 -> container 9090
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data/prometheus:/prometheus
+    restart: unless-stopped
+    networks: [quant-net]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: juniauto-grafana
+    ports:
+      - "31300:3000"   # host 31300 -> container 3000
+    depends_on: [questdb, prometheus]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=questdb-questdb-datasource
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GRAFANA_QUESTDB_PW=${GRAFANA_QUESTDB_PW:-quest}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./data/grafana:/var/lib/grafana
+    restart: unless-stopped
+    networks: [quant-net]
+
+networks:
+  quant-net:
+    driver: bridge

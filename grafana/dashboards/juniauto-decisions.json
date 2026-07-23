@@ -1,0 +1,218 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Shadow promotions",
+        "datasource": {"type": "postgres", "uid": "QuestDB"},
+        "enable": true,
+        "iconColor": "rgba(0, 200, 0, 1)",
+        "rawQuery": "SELECT ts AS time, horizon AS text, 'promotion' AS tags FROM shadow_deltas WHERE promotion_ready = true AND $__timeFilter(ts)",
+        "target": {
+          "rawSql": "SELECT ts AS time, horizon AS text, 'promotion' AS tags FROM shadow_deltas WHERE promotion_ready = true AND $__timeFilter(ts)",
+          "format": "table"
+        }
+      }
+    ]
+  },
+  "description": "JuniAuto decisions / audit dashboard — see docs/knowledge-base/part6-operational.md § 3.10",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "juniauto-decisions",
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "barchart",
+      "title": "Decisions per day (executed vs not)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.10",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 0},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "lineWidth": 1
+          },
+          "unit": "none",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "orientation": "vertical",
+        "stacking": "normal",
+        "tooltip": {"mode": "multi", "sort": "none"},
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 100
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('day', ts) AS day,\n       SUM(CASE WHEN executed = true  THEN 1 ELSE 0 END) AS executed,\n       SUM(CASE WHEN executed = false THEN 1 ELSE 0 END) AS rejected\n  FROM gateway_actions\n WHERE $__timeFilter(ts)\n GROUP BY day\n ORDER BY day"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Reject reasons (count)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.10",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 6, "x": 12, "y": 0},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"align": "auto", "displayMode": "auto"},
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {"showHeader": true, "cellHeight": "sm", "footer": {"show": false}},
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT reject_reason, COUNT(*) AS n\n  FROM gateway_actions\n WHERE executed = false AND $__timeFilter(ts)\n GROUP BY reject_reason\n ORDER BY n DESC"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "barchart",
+      "title": "Reject reasons (bar)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.10",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 9, "w": 6, "x": 18, "y": 0},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"axisPlacement": "auto", "fillOpacity": 80, "lineWidth": 1},
+          "unit": "none",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "orange", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": false},
+        "orientation": "horizontal",
+        "tooltip": {"mode": "single", "sort": "none"},
+        "xTickLabelRotation": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT reject_reason, COUNT(*) AS n\n  FROM gateway_actions\n WHERE executed = false AND $__timeFilter(ts)\n GROUP BY reject_reason\n ORDER BY n DESC"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "xychart",
+      "title": "Slippage vs model_edge (scatter)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.10 (§3.2 execution telemetry)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 9},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "axisPlacement": "auto",
+            "fillOpacity": 60,
+            "lineWidth": 0,
+            "pointSize": 5,
+            "show": "points"
+          },
+          "unit": "none",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "dims": {"frame": 0, "x": "model_edge_bps"},
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "series": [{"x": "model_edge_bps", "y": "slippage_bps"}],
+        "seriesMapping": "manual",
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT model_edge_bps, slippage_bps\n  FROM executions\n WHERE $__timeFilter(ts)\n   AND model_edge_bps IS NOT NULL\n   AND slippage_bps IS NOT NULL"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Source package evidence (bps)",
+      "description": "See docs/knowledge-base/part6-operational.md § 3.10 (§2.20 source packages)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 9},
+      "interval": "auto",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "auto",
+            "spanNulls": true
+          },
+          "unit": "none",
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {"type": "postgres", "uid": "QuestDB"},
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time, package_id AS metric, evidence_bps AS value\n  FROM source_evidence\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["juniauto"],
+  "templating": {"list": []},
+  "time": {"from": "now-7d", "to": "now"},
+  "timepicker": {},
+  "timezone": "America/New_York",
+  "title": "JuniAuto — Decisions & Audit",
+  "version": 1,
+  "weekStart": ""
+}

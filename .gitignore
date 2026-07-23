@@ -1,0 +1,67 @@
+# --- Secrets & env ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.so
+!engine/**/*.so
+
+# --- C++ / CMake ---
+engine/build/
+engine/cmake-build-*/
+engine/**/*.o
+engine/**/*.obj
+engine/**/*.a
+engine/**/*.dylib
+engine/**/*.dll
+engine/**/*.exe
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+compile_commands.json
+
+# --- Data & artifacts ---
+data/
+logs/
+cache/
+*.parquet
+*.duckdb
+grafana-data/
+prometheus-data/
+questdb/
+!config/questdb.conf
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Third-party spec sources (not redistributable in this public repo) ---
+/PRINCIPLESLONG.md
+/instructions.md
+
+# --- Local Claude Code / editor harness settings ---
+/.claude/
