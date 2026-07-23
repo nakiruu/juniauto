@@ -53,7 +53,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 6, "w": 6, "x": 0, "y": 1},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -100,7 +100,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§2.41 promotion gate)",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 6, "w": 12, "x": 6, "y": 1},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -145,7 +145,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 1},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -188,7 +188,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.1 account snapshots)",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -228,7 +228,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -276,7 +276,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 — no positions table; derived from executions",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 16},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {"align": "auto", "displayMode": "auto"},
@@ -309,7 +309,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (net edge = gross - all costs)",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 16},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "bucketSize": 5,
         "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}
@@ -342,7 +342,7 @@
       "description": "See docs/knowledge-base/part3-costs.md §2.9–2.18",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 12, "x": 0, "y": 25},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "displayLabels": ["name", "percent"],
         "legend": {"displayMode": "table", "placement": "right", "showLegend": true, "values": ["value", "percent"]},
@@ -378,7 +378,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.2 execution telemetry)",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 12, "x": 12, "y": 25},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -421,7 +421,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§2.41 shadow monitor)",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 9, "w": 24, "x": 0, "y": 34},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -469,7 +469,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "gridPos": {"h": 6, "w": 6, "x": 0, "y": 44},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -503,7 +503,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "gridPos": {"h": 6, "w": 6, "x": 6, "y": 44},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -537,7 +537,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6 (§3.1 PDT max 3/5d)",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "gridPos": {"h": 6, "w": 6, "x": 12, "y": 44},
-      "interval": "auto",
+      "interval": "",
       "options": {
         "colorMode": "background",
         "graphMode": "none",
@@ -580,7 +580,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "gridPos": {"h": 6, "w": 6, "x": 18, "y": 44},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
@@ -624,7 +624,7 @@
       "description": "See docs/knowledge-base/part6-operational.md § 3.6",
       "datasource": {"type": "prometheus", "uid": "Prometheus"},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 50},
-      "interval": "auto",
+      "interval": "",
       "fieldConfig": {
         "defaults": {
           "custom": {
