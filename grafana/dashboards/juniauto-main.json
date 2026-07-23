@@ -298,7 +298,7 @@
           "datasource": {"type": "postgres", "uid": "QuestDB"},
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT symbol, side, qty, avg_entry_price, market_value, unrealized_pl\n  FROM positions\n LATEST ON ts PARTITION BY symbol\n WHERE qty != 0"
+          "rawSql": "SELECT symbol, side, qty, avg_entry_price, market_value, unrealized_pl\n  FROM (\n    SELECT symbol, side, qty, avg_entry_price, market_value, unrealized_pl\n      FROM positions\n     LATEST ON ts PARTITION BY symbol\n  )\n WHERE qty != 0"
         }
       ]
     },
