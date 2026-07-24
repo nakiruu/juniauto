@@ -330,12 +330,58 @@
       }
     },
     {
+      "id": 104,
+      "type": "row",
+      "title": "Cadence validation (phantom cycles)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 43},
+      "collapsed": false
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Phantom basket forward return (bps) by cycle time",
+      "description": "Kelly-weighted 1-day forward return of each phantom cycle's top-K basket. Compares 09:40 open, 12:30 midday, and 15:55 pre-close decisions. Higher = that time captures more edge. Verdict criterion needs ~40 trading days per the promotion rule (see docs/knowledge-base/part4-gateway-execution.md).",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 44},
+      "interval": "",
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time,\n       cycle_time AS metric,\n       SUM(target_weight * realized_return_bps) / NULLIF(SUM(target_weight), 0) AS value\n  FROM phantom_gateway_actions\n WHERE $__timeFilter(ts)\n   AND realized_return_bps IS NOT NULL\n   AND target_weight > 0\n GROUP BY ts, cycle_time\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 5, "fillOpacity": 5},
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Phantom cycle summary (rolling 30d)",
+      "description": "Per-cycle-time summary of resolved phantom baskets. Sample count + mean basket return in bps.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 52},
+      "interval": "",
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT cycle_time,\n       COUNT(DISTINCT ts::date) AS trading_days,\n       AVG(basket_return) AS mean_return_bps,\n       STDDEV(basket_return) AS stddev_bps\n  FROM (\n    SELECT ts,\n           cycle_time,\n           SUM(target_weight * realized_return_bps) / NULLIF(SUM(target_weight), 0) AS basket_return\n      FROM phantom_gateway_actions\n     WHERE ts > dateadd('d', -30, now())\n       AND realized_return_bps IS NOT NULL\n       AND target_weight > 0\n     GROUP BY ts, cycle_time\n  )\n GROUP BY cycle_time\n ORDER BY cycle_time"
+        }
+      ],
+      "options": {"showHeader": true}
+    },
+    {
       "id": 12,
       "type": "table",
       "title": "Latest top-K roster (from QuestDB)",
       "description": "Names selected by top-K this cycle with target weight, current weight, drift, and net edge. Ranked by target_weight.",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 44},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 58},
       "interval": "",
       "targets": [
         {

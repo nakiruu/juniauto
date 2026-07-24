@@ -19,7 +19,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from prometheus_client import start_http_server
 
-from juniauto.bayesian import BayesianModel, resolve_stale_executions
+from juniauto.bayesian import (
+    BayesianModel,
+    resolve_stale_executions,
+    resolve_stale_phantoms,
+)
 from juniauto.config import JuniAutoConfig, load_config
 from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
@@ -115,7 +119,8 @@ class JuniAuto:
         except Exception as e:  # noqa: BLE001
             log.warning("boot_replay_failed", error=str(e))
 
-        # daily decision tick at 15:55 ET, Mon-Fri
+        # Live decision tick at 15:55 ET, Mon-Fri — the only cycle that
+        # actually places orders.
         hh, mm = self.cfg.model.decision_time_et.split(":")
         self._sched.add_job(
             self._daily_decision_cycle,
@@ -123,7 +128,28 @@ class JuniAuto:
             id="daily_decision_cycle",
             replace_existing=True,
         )
-        # slow-feedback resolution loop hourly (fill outcomes, shadow updates)
+        # Phantom cadence-validation cycles. Compute what the pipeline WOULD
+        # pick at alternate decision times; write to phantom_gateway_actions;
+        # skip order routing entirely. Basket returns get backfilled by the
+        # phantom resolver so we can compare 09:40 vs 12:30 vs 15:55 baskets
+        # over ~40 trading days and decide empirically whether to move the
+        # live decision time. See docs/knowledge-base/part4-gateway-execution.md.
+        self._sched.add_job(
+            self._daily_decision_cycle,
+            CronTrigger(day_of_week="mon-fri", hour=9, minute=40, timezone=ET),
+            id="phantom_cycle_0940",
+            kwargs={"execute": False, "cycle_type": "0940"},
+            replace_existing=True,
+        )
+        self._sched.add_job(
+            self._daily_decision_cycle,
+            CronTrigger(day_of_week="mon-fri", hour=12, minute=30, timezone=ET),
+            id="phantom_cycle_1230",
+            kwargs={"execute": False, "cycle_type": "1230"},
+            replace_existing=True,
+        )
+        # Slow-feedback resolution loop hourly (fill outcomes, shadow updates,
+        # phantom-basket forward-return backfill).
         self._sched.add_job(
             self._resolution_loop,
             CronTrigger(minute="5", timezone=ET),
@@ -1064,7 +1090,16 @@ class JuniAuto:
         except Exception as e:  # noqa: BLE001
             log.warning("resolution_executions_failed", error=str(e))
 
-        # Retrain ridge on any newly-resolved rows
+        # Resolve phantom cadence-validation rows → basket-comparison analytics
+        try:
+            n_phantoms = resolve_stale_phantoms(self.db)
+            log.info("resolution_phantoms_resolved", n_resolved=n_phantoms)
+        except Exception as e:  # noqa: BLE001
+            log.warning("resolution_phantoms_failed", error=str(e))
+
+        # Retrain ridge on any newly-resolved rows (EXECUTIONS only; phantom
+        # returns intentionally excluded to avoid using our own predictions
+        # as training labels).
         try:
             n_trained = self.bayes.retrain_from_db()
             log.info("resolution_bayes_retrained", n_samples=n_trained)
