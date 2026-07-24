@@ -145,6 +145,41 @@ CREATE TABLE IF NOT EXISTS positions (
 ) TIMESTAMP(ts) PARTITION BY DAY WAL;
 
 -- ============================================================
+-- Phantom decision cycle output (cadence validation, no orders placed)
+-- Structure mirrors gateway_actions with an extra cycle_time SYMBOL so
+-- we can compare basket-forward-returns across different intraday
+-- decision times (09:40, 12:30, 15:55, ...) without placing trades.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS phantom_gateway_actions (
+    symbol                SYMBOL CAPACITY 8192 CACHE,
+    ts                    TIMESTAMP,
+    cycle_time            SYMBOL CAPACITY 8 CACHE,   -- 0940 | 1230 | 1555
+    action_type           SYMBOL CAPACITY 8 CACHE,
+    role                  SYMBOL CAPACITY 4 CACHE,
+    horizon               SYMBOL CAPACITY 8 CACHE,
+    gross_edge_bps        DOUBLE,
+    entry_cost_bps        DOUBLE,
+    exit_cost_reserved    DOUBLE,
+    queue_delay_bps       DOUBLE,
+    cancel_replace_bps    DOUBLE,
+    action_memory_bps     DOUBLE,
+    cash_waiting_value    DOUBLE,
+    operational_bps       DOUBLE,
+    total_cost_bps        DOUBLE,
+    net_edge_bps          DOUBLE,
+    hurdle_bps            DOUBLE,
+    friction_multiplier   DOUBLE,
+    executed              BOOLEAN,
+    reject_reason         SYMBOL CAPACITY 32 CACHE,
+    rebalance_kind        SYMBOL CAPACITY 8 CACHE,
+    target_weight         DOUBLE,
+    current_weight        DOUBLE,
+    delta_weight          DOUBLE,
+    realized_return_bps   DOUBLE,                    -- backfilled by phantom resolver
+    resolved_at           TIMESTAMP
+) TIMESTAMP(ts) PARTITION BY DAY WAL;
+
+-- ============================================================
 -- Additive migrations for existing tables
 -- ============================================================
 -- QuestDB 8.x does NOT support `ADD COLUMN IF NOT EXISTS` (that's a Postgres
