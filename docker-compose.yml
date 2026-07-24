@@ -58,6 +58,10 @@ services:
       # Safety gate — TRADING_ENABLED=true in .env arms real order submission.
       # Defaults to false so a stray container start never places orders.
       - TRADING_ENABLED=${TRADING_ENABLED:-false}
+      # PDT gate override — PDT_ENFORCE=false bypasses day-trade caps and
+      # min-hold checks. Read per-call by pdt.py so a one-off `docker exec -e
+      # PDT_ENFORCE=false ...` bypasses without restarting. Paper only!
+      - PDT_ENFORCE=${PDT_ENFORCE:-true}
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
