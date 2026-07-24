@@ -326,7 +326,11 @@ class JuniAuto:
         slippage.recent_fill_slippage_bps = 0.0  # cold-start
 
         # MVP sizing: fixed 5% of equity per candidate. Real Kelly sizing in a later pass.
-        target_weight = min(0.05, self.sizing_cfg.max_name_weight)
+        # Note: reading the cap from the Pydantic config rather than the
+        # quant_engine.SizingConfig struct because the pybind11 binding for
+        # SizingConfig only exposes `__init__` (no def_readwrite on fields).
+        # Adding field bindings requires a C++ rebuild; the two defaults match (0.10).
+        target_weight = min(0.05, self.cfg.sizing.max_name_weight)
         notional = target_weight * float(account_equity)
 
         order = qe.Order()
