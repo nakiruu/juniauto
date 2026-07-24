@@ -94,13 +94,16 @@ class DataAggregator:
 
     # ---- Persistence via ILP ----
     def _persist(self, snap: MarketSnapshot) -> None:
+        # Daily bars from Alpaca are always regular-session by definition;
+        # calling session_of() per bar (which reaches into pandas_market_calendars)
+        # was the hot-path bottleneck for a 31-symbol × 252-bar snapshot.
         try:
             with self._db.sender() as s:
                 for sym, series in snap.bars.items():
                     for b in series:
                         s.row(
                             "bars",
-                            symbols={"symbol": sym, "session": session_of(b.ts)},
+                            symbols={"symbol": sym, "session": "regular"},
                             columns={
                                 "open": b.open,
                                 "high": b.high,

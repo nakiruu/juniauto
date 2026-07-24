@@ -5,10 +5,15 @@ not wall-clock seconds. This module is the single place that answers:
     - Is `t` inside the regular US equities session?
     - How many trading days between two timestamps?
     - What is the next decision tick at 15:55 ET?
+
+Hot-path callers (ILP writers touching thousands of bars per snapshot)
+should assume the calendar-lookup helpers here are cheap — every function
+that hits `pandas_market_calendars` is LRU-cached below.
 """
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 import pandas_market_calendars as mcal
@@ -30,21 +35,25 @@ def to_et(ts: datetime) -> datetime:
     return ts.astimezone(ET) if ts.tzinfo else ts.replace(tzinfo=ET)
 
 
+@lru_cache(maxsize=4096)
 def is_trading_day(d: date) -> bool:
     sched = NYSE.schedule(start_date=d, end_date=d)
     return not sched.empty
 
 
+@lru_cache(maxsize=1024)
 def previous_trading_day(d: date) -> date:
     sched = NYSE.schedule(start_date=d - timedelta(days=10), end_date=d - timedelta(days=1))
     return sched.index[-1].date()  # type: ignore[no-any-return]
 
 
+@lru_cache(maxsize=1024)
 def next_trading_day(d: date) -> date:
     sched = NYSE.schedule(start_date=d + timedelta(days=1), end_date=d + timedelta(days=10))
     return sched.index[0].date()  # type: ignore[no-any-return]
 
 
+@lru_cache(maxsize=4096)
 def trading_days_between(a: date, b: date) -> int:
     if a > b:
         a, b = b, a
