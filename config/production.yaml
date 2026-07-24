@@ -106,6 +106,10 @@ sizing:
   aggregate_comfortable_weight: 0.20       # §2.30
   gamma_risk: 1.0                          # §2.1
   lambda_confirm: 0.05                     # §2.1
+  # Reweight step (§2.16-2.17). Deltas below this band collapse to HOLD.
+  rebalance_dead_band: 0.01
+  # SELL/ROTATE hurdle in bps (informational until Bayesian is trained).
+  rotation_hurdle_bps: 15.0
 
 # --- Shadow monitor (§2.41) ---
 shadow:

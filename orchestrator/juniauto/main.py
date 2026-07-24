@@ -274,44 +274,81 @@ class JuniAuto:
             log.info("cycle_end")
             return
 
-        submitted = 0
+        submitted_buy = 0
+        submitted_sell = 0
         rejected = 0
-        skipped_existing = 0
+        held = 0
+        dead_band = float(self.cfg.sizing.rebalance_dead_band)
+
         for a in gw_actions:
-            # Commit 3 is BUY-only: entry into names we don't currently hold, sized
-            # to the target weight. Add / trim / rotate all land in commit 4.
-            if a["rebalance_kind"] != "entry":
-                if a["rebalance_kind"] in ("add", "trim", "hold"):
-                    skipped_existing += 1
+            kind = str(a["rebalance_kind"])
+            delta_w = float(a["delta_weight"])
+            mid = float(a["mid_price"])
+
+            # Dead-band: collapse cycle-to-cycle micro-drift into HOLD.
+            if kind in ("add", "trim") and abs(delta_w) < dead_band:
+                held += 1
                 continue
-            if float(a["mid_price"]) <= 0 or float(a["target_weight"]) <= 0:
+
+            if kind == "hold" or kind == "reject":
+                held += 1
                 continue
-            notional = float(a["target_weight"]) * float(acct["equity"])
-            qty = round(notional / float(a["mid_price"]), 4)
+
+            if mid <= 0:
+                rejected += 1
+                log.info("order_rejected", symbol=str(a["symbol"]), reason="no_mid_price")
+                continue
+
+            symbol = str(a["symbol"])
+            notional_abs = abs(delta_w) * float(acct["equity"])
+            qty = round(notional_abs / mid, 4)
             if qty <= 0:
+                held += 1
                 continue
+
+            if kind in ("entry", "add"):
+                side = "buy"
+                action_type = "BUY"
+            elif kind == "trim":
+                side = "sell"
+                # Full-exit if target dropped to zero; partial otherwise.
+                action_type = "SELL" if float(a["target_weight"]) <= 0.0 else "ROTATE"
+            else:
+                held += 1
+                continue
+
             result = self.order_mgr.route(
-                symbol=str(a["symbol"]),
-                action_type="BUY",
-                side="buy",
+                symbol=symbol,
+                action_type=action_type,
+                side=side,
                 qty=qty,
                 model_edge_bps=float(a["net_edge_bps"]),
-                decision_ref_price=float(a["mid_price"]),
+                decision_ref_price=mid,
                 limit_price=None,
                 horizon="1d",
                 now=now,
             )
-            if result.executed:
-                submitted += 1
-            else:
+            if not result.executed:
                 rejected += 1
-                log.info("order_rejected", symbol=result.symbol, reason=result.reject_reason)
+                log.info(
+                    "order_rejected",
+                    symbol=result.symbol,
+                    kind=kind,
+                    reason=result.reject_reason,
+                )
+                continue
+            if side == "buy":
+                submitted_buy += 1
+            else:
+                submitted_sell += 1
 
         log.info(
             "step6_orders",
-            submitted=submitted,
+            submitted_buy=submitted_buy,
+            submitted_sell=submitted_sell,
             rejected=rejected,
-            skipped_existing=skipped_existing,
+            held=held,
+            dead_band=dead_band,
         )
         log.info("cycle_end")
 

@@ -151,6 +151,15 @@ class SizingConfig(BaseModel):
     aggregate_comfortable_weight: float
     gamma_risk: float
     lambda_confirm: float
+    # Reweight step (§2.16-2.17). Any delta_weight smaller than this band
+    # collapses to HOLD — prevents cycle-to-cycle churn from tiny numerical
+    # drift in the target weights.
+    rebalance_dead_band: float = 0.01
+    # SELL/ROTATE hurdle in bps. When wired end-to-end this is the minimum
+    # EV improvement required to justify closing a live position. For MVP
+    # (Bayesian uninformative) it acts as an informational threshold only;
+    # the dead-band + PDT gate do the actual filtering.
+    rotation_hurdle_bps: float = 15.0
 
 
 class ShadowConfig(BaseModel):
