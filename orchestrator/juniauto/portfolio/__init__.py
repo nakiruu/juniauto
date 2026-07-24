@@ -10,7 +10,16 @@ from juniauto.portfolio.weighting import (
     Candidate,
     WeightingResult,
     compute_target_weights,
+    edges_cv,
     fixed_equal_weights,
+    select_top_k,
 )
 
-__all__ = ["Candidate", "WeightingResult", "compute_target_weights", "fixed_equal_weights"]
+__all__ = [
+    "Candidate",
+    "WeightingResult",
+    "compute_target_weights",
+    "fixed_equal_weights",
+    "edges_cv",
+    "select_top_k",
+]

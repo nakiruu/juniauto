@@ -102,7 +102,10 @@ costs:
 
 # --- Portfolio sizing (§2.29-2.30) ---
 sizing:
-  max_name_weight: 0.10                    # §2.29
+  # Raised from 0.10 -> 0.15 to accommodate K=8 equal-weight floor (12.5%).
+  # Without the bump, the 0.10 cap would bind every cycle and leak weight
+  # to cash unnecessarily.
+  max_name_weight: 0.15                    # §2.29
   cash_floor: 0.05                         # §2.29
   aggregate_comfortable_weight: 0.20       # §2.30
   gamma_risk: 1.0                          # §2.1
@@ -111,6 +114,12 @@ sizing:
   rebalance_dead_band: 0.01
   # SELL/ROTATE hurdle in bps (informational until Bayesian is trained).
   rotation_hurdle_bps: 15.0
+  # ---- Top-K holdings cap ----
+  # Hard cap on concurrently-held names. Gated on Bayesian informativeness
+  # so cold-start falls back to the uncapped scheme.
+  max_holdings: 8
+  top_k_activation_cv_threshold: 0.25
+  hysteresis_edge_delta_bps: 20.0
 
 # --- Shadow monitor (§2.41) ---
 shadow:

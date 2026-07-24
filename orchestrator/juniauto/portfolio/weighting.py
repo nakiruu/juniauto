@@ -55,6 +55,54 @@ DEFAULT_SIGMA_FLOOR_BPS = 100.0
 DEFAULT_COLD_START_CV_THRESHOLD = 1e-6
 
 
+def edges_cv(candidates: Iterable[Candidate]) -> float:
+    """Coefficient of variation of conservative_edge across candidates.
+    Returns 0.0 for degenerate inputs (empty, single, all-zero, all-equal)."""
+    cands = list(candidates)
+    if len(cands) < 2:
+        return 0.0
+    arr = np.array([c.conservative_edge_bps for c in cands], dtype=float)
+    mean_abs = float(np.abs(arr).mean())
+    if mean_abs == 0.0:
+        return 0.0
+    return float(arr.std() / mean_abs)
+
+
+def select_top_k(
+    candidates: Iterable[Candidate],
+    *,
+    k: int,
+    incumbents: set[str] | None = None,
+    hysteresis_edge_bps: float = 20.0,
+) -> list[Candidate]:
+    """Rank candidates by conservative_edge and keep the top K, applying an
+    edge-delta hysteresis boost to currently-held names.
+
+    Semantics: an incumbent (symbol already in the portfolio) has its ranking
+    edge boosted by `hysteresis_edge_bps`, so a new candidate must beat the
+    incumbent by that margin to displace it. Prevents rank-noise churn at
+    the K-th slot boundary — every cycle would otherwise re-shuffle the
+    marginal position, forcing PDT-costly BUY/SELL pairs on noise.
+
+    Cold-start / disabled cases return the input unchanged:
+        - k <= 0 or empty candidates -> []
+        - k >= len(candidates)       -> all candidates (nothing to drop)
+    """
+    cands = list(candidates)
+    if not cands or k <= 0:
+        return []
+    if k >= len(cands):
+        return cands
+    inc = incumbents or set()
+
+    def boosted(c: Candidate) -> float:
+        boost = hysteresis_edge_bps if c.symbol in inc else 0.0
+        return c.conservative_edge_bps + boost
+
+    ranked = sorted(cands, key=boosted, reverse=True)
+    return ranked[:k]
+
+
 def compute_target_weights(
     candidates: Iterable[Candidate],
     *,

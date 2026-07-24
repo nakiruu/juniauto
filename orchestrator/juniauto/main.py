@@ -23,7 +23,13 @@ from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
 from juniauto.execution import OrderManager, PDTTracker
 from juniauto.monitoring import metrics as m
-from juniauto.portfolio import Candidate, compute_target_weights, fixed_equal_weights
+from juniauto.portfolio import (
+    Candidate,
+    compute_target_weights,
+    edges_cv,
+    fixed_equal_weights,
+    select_top_k,
+)
 from juniauto.replay import ReplayHarness
 from juniauto.signals import compute_all
 from juniauto.utils import configure_logging, get_logger
@@ -433,6 +439,46 @@ class JuniAuto:
             )
             for sym in executed_syms
         ]
+
+        # ---- Top-K selection (gated on trained Bayesian + informative CV) ----
+        # Coordinator design: hard cap on holdings once edges are meaningfully
+        # differentiated. Cold-start (CV below threshold) falls back to the
+        # uncapped scheme so a broken selector cannot halt the live loop.
+        cv = edges_cv(candidates)
+        top_k_active = (
+            self.bayes.is_trained()
+            and cv >= float(self.cfg.sizing.top_k_activation_cv_threshold)
+            and len(candidates) > int(self.cfg.sizing.max_holdings)
+        )
+        if top_k_active:
+            incumbents = {s for s, w in current_weights.items() if w > 0}
+            surviving = select_top_k(
+                candidates,
+                k=int(self.cfg.sizing.max_holdings),
+                incumbents=incumbents,
+                hysteresis_edge_bps=float(self.cfg.sizing.hysteresis_edge_delta_bps),
+            )
+            surviving_syms = {c.symbol for c in surviving}
+            n_incumbents_kept = sum(1 for c in surviving if c.symbol in incumbents)
+            log.info(
+                "top_k_active",
+                k=len(surviving),
+                cv=round(cv, 4),
+                n_dropped=len(candidates) - len(surviving),
+                incumbents_kept=n_incumbents_kept,
+                incumbents_displaced=len(incumbents) - n_incumbents_kept,
+            )
+            candidates = surviving
+        else:
+            log.info(
+                "top_k_skipped",
+                bayes_trained=self.bayes.is_trained(),
+                cv=round(cv, 4),
+                cv_threshold=float(self.cfg.sizing.top_k_activation_cv_threshold),
+                n_candidates=len(candidates),
+                max_holdings=int(self.cfg.sizing.max_holdings),
+            )
+
         live = compute_target_weights(
             candidates,
             max_name_weight=self.cfg.sizing.max_name_weight,

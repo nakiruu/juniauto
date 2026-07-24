@@ -160,6 +160,20 @@ class SizingConfig(BaseModel):
     # (Bayesian uninformative) it acts as an informational threshold only;
     # the dead-band + PDT gate do the actual filtering.
     rotation_hurdle_bps: float = 15.0
+    # ---- Top-K holdings cap (multi-agent-coordinator design commit 3/4) ----
+    # Hard cap on number of concurrently-held names once the Bayesian is
+    # informative. Gated by top_k_activation_cv_threshold so cold-start
+    # falls back to current uncapped equal-weight scheme.
+    max_holdings: int = 8
+    # Coefficient of variation (std/|mean|) that composite_edge must exceed
+    # across executed candidates to activate top-K. Below threshold the
+    # ranking is too uniform to be informative — fall back to uncapped Kelly.
+    top_k_activation_cv_threshold: float = 0.25
+    # Edge-delta hysteresis for the top-K selector: incumbents (currently-held
+    # names) get this many bps added to their conservative_edge when ranking.
+    # A new candidate must beat an incumbent by this margin to displace it,
+    # preventing rank-noise churn at the K-th slot boundary.
+    hysteresis_edge_delta_bps: float = 20.0
 
 
 class ShadowConfig(BaseModel):
