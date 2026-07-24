@@ -116,9 +116,10 @@ sizing:
   rotation_hurdle_bps: 15.0
   # ---- Top-K holdings cap ----
   # Hard cap on concurrently-held names. Gated on Bayesian informativeness
-  # so cold-start falls back to the uncapped scheme.
+  # so cold-start (CV=0 by construction) falls back to the uncapped scheme,
+  # while any non-trivial signal (CV >= 0.05) activates top-K.
   max_holdings: 8
-  top_k_activation_cv_threshold: 0.25
+  top_k_activation_cv_threshold: 0.05
   hysteresis_edge_delta_bps: 20.0
 
 # --- Shadow monitor (§2.41) ---

@@ -168,7 +168,13 @@ class SizingConfig(BaseModel):
     # Coefficient of variation (std/|mean|) that composite_edge must exceed
     # across executed candidates to activate top-K. Below threshold the
     # ranking is too uniform to be informative — fall back to uncapped Kelly.
-    top_k_activation_cv_threshold: float = 0.25
+    # Empirical: a ridge-regularized Bayesian on 7000 backfill samples
+    # produces CV ≈ 0.08. Coordinator's original 0.25 was overcautious and
+    # kept top-K silently disabled even under a trained model, leaving the
+    # portfolio to accrue leverage from stacking many small positions. 0.05
+    # activates on typical trained CVs without firing on cold-start (which
+    # has CV=0 by construction).
+    top_k_activation_cv_threshold: float = 0.05
     # Edge-delta hysteresis for the top-K selector: incumbents (currently-held
     # names) get this many bps added to their conservative_edge when ranking.
     # A new candidate must beat an incumbent by this margin to displace it,
