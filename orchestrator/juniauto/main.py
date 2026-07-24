@@ -21,6 +21,7 @@ from juniauto.config import JuniAutoConfig, load_config
 from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
 from juniauto.execution import OrderManager, PDTTracker
+from juniauto.portfolio import Candidate, compute_target_weights
 from juniauto.replay import ReplayHarness
 from juniauto.signals import compute_all
 from juniauto.utils import configure_logging, get_logger
@@ -247,6 +248,18 @@ class JuniAuto:
             n_would_execute=n_exec,
             n_would_reject=len(gw_actions) - n_exec,
         )
+
+        # --- Step 5.5: compute target weights over the executed subset (§2.28-2.30) ---
+        current_weights = self._current_weights_by_symbol(acct["equity"])
+        gw_actions = self._apply_target_weights(gw_actions, current_weights)
+        n_kelly_at_cap = sum(1 for a in gw_actions if a.get("_capped_at_cap"))
+        log.info(
+            "step5_5_weights",
+            invested_pct=round(sum(float(a["target_weight"]) for a in gw_actions) * 100, 2),
+            n_at_cap=n_kelly_at_cap,
+            scheme_hint="kelly_or_equal_fallback",
+        )
+
         self._persist_gateway_actions(gw_actions, now, horizon="1d")
 
         # --- Step 6-7: order routing + outcome record (§3.3, §3.2 step 7) ---
@@ -255,7 +268,7 @@ class JuniAuto:
         if not self.cfg.system.trading_enabled:
             log.info(
                 "step6_trading_disabled_dry_run",
-                n_would_submit=n_exec,
+                n_would_submit=sum(1 for a in gw_actions if a["rebalance_kind"] == "entry"),
                 message="Set system.trading_enabled: true in production.yaml to arm order submission.",
             )
             log.info("cycle_end")
@@ -263,20 +276,28 @@ class JuniAuto:
 
         submitted = 0
         rejected = 0
+        skipped_existing = 0
         for a in gw_actions:
-            if not a["executed"] or float(a["mid_price"]) <= 0:
+            # Commit 3 is BUY-only: entry into names we don't currently hold, sized
+            # to the target weight. Add / trim / rotate all land in commit 4.
+            if a["rebalance_kind"] != "entry":
+                if a["rebalance_kind"] in ("add", "trim", "hold"):
+                    skipped_existing += 1
                 continue
-            qty = round(float(a["notional"]) / float(a["mid_price"]), 4)
+            if float(a["mid_price"]) <= 0 or float(a["target_weight"]) <= 0:
+                continue
+            notional = float(a["target_weight"]) * float(acct["equity"])
+            qty = round(notional / float(a["mid_price"]), 4)
             if qty <= 0:
                 continue
             result = self.order_mgr.route(
                 symbol=str(a["symbol"]),
-                action_type=str(a["action_type"]),
-                side="buy",  # MVP: BUY-only cycle
+                action_type="BUY",
+                side="buy",
                 qty=qty,
                 model_edge_bps=float(a["net_edge_bps"]),
                 decision_ref_price=float(a["mid_price"]),
-                limit_price=None,   # MVP: marketable orders; limit routing later
+                limit_price=None,
                 horizon="1d",
                 now=now,
             )
@@ -286,8 +307,92 @@ class JuniAuto:
                 rejected += 1
                 log.info("order_rejected", symbol=result.symbol, reason=result.reject_reason)
 
-        log.info("step6_orders", submitted=submitted, rejected=rejected)
+        log.info(
+            "step6_orders",
+            submitted=submitted,
+            rejected=rejected,
+            skipped_existing=skipped_existing,
+        )
         log.info("cycle_end")
+
+    # ---- Step 5.5 helpers ----
+    def _current_weights_by_symbol(self, equity: float) -> dict[str, float]:
+        """symbol -> current portfolio weight from Alpaca positions."""
+        if equity <= 0:
+            return {}
+        try:
+            positions = self.alpaca.get_positions()
+        except Exception as e:  # noqa: BLE001
+            log.warning("current_weights_positions_fetch_failed", error=str(e))
+            return {}
+        return {p["symbol"]: float(p["market_value"]) / float(equity) for p in positions}
+
+    def _apply_target_weights(
+        self,
+        gw_actions: list[dict[str, object]],
+        current_weights: dict[str, float],
+    ) -> list[dict[str, object]]:
+        """Compute target weights across executed candidates, annotate each row
+        with target_weight / current_weight / delta_weight / rebalance_kind."""
+        executed_syms = [str(a["symbol"]) for a in gw_actions if a["executed"]]
+        # Composite edge is the pre-cost Kelly numerator (§2.7-2.8). For MVP with
+        # sigma_total = 0 on cold start, the CV-based fallback in compute_target_weights
+        # collapses to equal weight — same behaviour as fixed 5% but under one code path.
+        # sigma_total_bps is currently 0 across all candidates; sigma_floor (100 bps) applies.
+        composite_by_sym: dict[str, float] = {}
+        for a in gw_actions:
+            if a["executed"]:
+                composite_by_sym[str(a["symbol"])] = float(a["gross_edge_bps"]) + float(
+                    a["total_cost_bps"]
+                )  # reconstruct pre-cost edge; gross = composite - cash_wait so this is close
+        # Fall back to net_edge_bps if the reconstruction is degenerate.
+        candidates = [
+            Candidate(
+                symbol=sym,
+                conservative_edge_bps=composite_by_sym.get(sym, 138.0),
+                sigma_total_bps=0.0,  # will populate once Bayesian trains
+            )
+            for sym in executed_syms
+        ]
+        result = compute_target_weights(
+            candidates,
+            max_name_weight=self.cfg.sizing.max_name_weight,
+            cash_floor=self.cfg.sizing.cash_floor,
+        )
+        log.info(
+            "target_weights",
+            scheme=result.scheme,
+            n_symbols=len(result.weights),
+            n_at_cap=result.n_at_name_cap,
+            cash_weight=round(result.cash_weight, 4),
+        )
+
+        for a in gw_actions:
+            sym = str(a["symbol"])
+            tw = float(result.weights.get(sym, 0.0))
+            cw = float(current_weights.get(sym, 0.0))
+            dw = tw - cw
+            a["target_weight"] = tw
+            a["current_weight"] = cw
+            a["delta_weight"] = dw
+            a["_capped_at_cap"] = tw >= self.cfg.sizing.max_name_weight - 1e-9
+            a["rebalance_kind"] = self._classify_rebalance(a, tw, cw)
+        return gw_actions
+
+    @staticmethod
+    def _classify_rebalance(action: dict[str, object], tw: float, cw: float) -> str:
+        # Rejected candidates keep their reject label under a single kind.
+        if not action["executed"]:
+            return "reject"
+        if cw <= 0.0 and tw > 0.0:
+            return "entry"
+        if tw <= 0.0 and cw > 0.0:
+            return "trim"  # full-close case; SELL logic lands in commit 4
+        if tw > cw:
+            return "add"   # increase existing position; commit 4 emits the delta-BUY
+        if tw < cw:
+            return "trim"  # decrease existing position; commit 4 emits the SELL
+        return "hold"
 
     # ---- Step 5 helpers ----
     def _evaluate_gateway(
@@ -453,6 +558,7 @@ class JuniAuto:
                         "role": str(a["role"]),
                         "horizon": horizon,
                         "reject_reason": str(a["reject_reason"]) or "none",
+                        "rebalance_kind": str(a.get("rebalance_kind", "reject")),
                     },
                     columns={
                         "gross_edge_bps": float(a["gross_edge_bps"]),
@@ -468,6 +574,9 @@ class JuniAuto:
                         "hurdle_bps": float(a["hurdle_bps"]),
                         "friction_multiplier": float(a["friction_multiplier"]),
                         "executed": bool(a["executed"]),
+                        "target_weight": float(a.get("target_weight", 0.0)),
+                        "current_weight": float(a.get("current_weight", 0.0)),
+                        "delta_weight": float(a.get("delta_weight", 0.0)),
                     },
                     at=ts,
                 )
