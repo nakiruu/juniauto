@@ -145,7 +145,7 @@ def build_training_matrix(
             ON e.symbol = f.symbol
             AND cast(e.ts AS DATE) = cast(f.ts AS DATE)
         WHERE e.realized_return_bps != 0.0
-          AND e.action_type IN ('BUY', 'ROTATE')
+          AND e.action_type IN ('BUY', 'ROTATE', 'BACKFILL')
         ORDER BY e.ts ASC
     """
     try:
