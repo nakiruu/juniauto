@@ -14,7 +14,9 @@ scipy==1.14.1
 
 # --- Data feeds ---
 alpaca-py==0.34.0
-yfinance==0.2.50
+# yfinance 0.2.55+ fixes the "'str' object has no attribute 'name'" crash
+# in .info parsing that hit 0.2.50 with modern Yahoo response formats.
+yfinance>=0.2.55,<0.3
 # curl_cffi impersonates Chrome's TLS + HTTP/2 fingerprint; Yahoo throttles
 # per-fingerprint, so masquerading as a real browser drops 429 rates by ~10x.
 curl_cffi==0.7.4

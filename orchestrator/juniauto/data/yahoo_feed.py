@@ -31,12 +31,33 @@ from curl_cffi import requests as cffi_requests
 from tenacity import (
     RetryError,
     retry,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
 
 from juniauto.utils import get_logger
+
+
+# Substrings that indicate a transient rate-limit / connectivity issue worth
+# retrying. Anything else (parse bugs, missing symbols, auth failures) fails
+# fast — retrying a code bug wastes ~14 seconds per symbol on backoff.
+_RETRYABLE_HINTS: tuple[str, ...] = (
+    "429",
+    "too many",
+    "rate limit",
+    "timed out",
+    "timeout",
+    "connection reset",
+    "connection refused",
+    "temporarily unavailable",
+    "empty info",  # our own soft-429 sentinel
+)
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _RETRYABLE_HINTS)
 
 log = get_logger(__name__)
 
@@ -168,7 +189,7 @@ class YahooFeed:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=8),
-        retry=retry_if_exception_type((_EmptyInfoError, Exception)),
+        retry=retry_if_exception(_is_retryable),
         reraise=True,
     )
     def _fetch_one(self, sym: str) -> Fundamentals:
