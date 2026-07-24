@@ -232,6 +232,10 @@ class SystemConfig(BaseModel):
     version: str
     environment: str
     timezone: str
+    # Safety gate: even when the container is up and the pipeline is fully
+    # wired, no order is submitted to Alpaca unless this is explicitly True.
+    # Default False — flip only after inspecting a few cycles of gateway_actions.
+    trading_enabled: bool = False
 
 
 class JuniAutoConfig(BaseModel):

@@ -50,7 +50,18 @@ class JuniAuto:
 
     # ---- Lifecycle ----
     async def start(self) -> None:
-        log.info("startup", version=self.cfg.system.version, env=self.cfg.system.environment, paper=self.cfg.alpaca.paper)
+        log.info(
+            "startup",
+            version=self.cfg.system.version,
+            env=self.cfg.system.environment,
+            paper=self.cfg.alpaca.paper,
+            trading_enabled=self.cfg.system.trading_enabled,
+        )
+        if self.cfg.system.trading_enabled and not self.cfg.alpaca.paper:
+            log.warning(
+                "LIVE_TRADING_ARMED",
+                message="trading_enabled=true AND paper=false — real orders will be sent to Alpaca live account",
+            )
 
         # ensure schema exists (idempotent)
         schema = Path(__file__).parent / "db" / "schema.sql"
@@ -233,10 +244,44 @@ class JuniAuto:
         )
         self._persist_gateway_actions(gw_actions, now, horizon="1d")
 
-        # Steps 6-7 (order submission + outcome persistence) come next.
-        for step in ["6_order_routing_pending", "7_outcome_record_pending"]:
-            log.info("cycle_step_stub", step=step)
+        # --- Step 6-7: order routing + outcome record (§3.3, §3.2 step 7) ---
+        # OrderManager writes to `executions` on submission and updates the PDT
+        # tracker; we just count outcomes here.
+        if not self.cfg.system.trading_enabled:
+            log.info(
+                "step6_trading_disabled_dry_run",
+                n_would_submit=n_exec,
+                message="Set system.trading_enabled: true in production.yaml to arm order submission.",
+            )
+            log.info("cycle_end")
+            return
 
+        submitted = 0
+        rejected = 0
+        for a in gw_actions:
+            if not a["executed"] or float(a["mid_price"]) <= 0:
+                continue
+            qty = round(float(a["notional"]) / float(a["mid_price"]), 4)
+            if qty <= 0:
+                continue
+            result = self.order_mgr.route(
+                symbol=str(a["symbol"]),
+                action_type=str(a["action_type"]),
+                side="buy",  # MVP: BUY-only cycle
+                qty=qty,
+                model_edge_bps=float(a["net_edge_bps"]),
+                decision_ref_price=float(a["mid_price"]),
+                limit_price=None,   # MVP: marketable orders; limit routing later
+                horizon="1d",
+                now=now,
+            )
+            if result.executed:
+                submitted += 1
+            else:
+                rejected += 1
+                log.info("order_rejected", symbol=result.symbol, reason=result.reject_reason)
+
+        log.info("step6_orders", submitted=submitted, rejected=rejected)
         log.info("cycle_end")
 
     # ---- Step 5 helpers ----
