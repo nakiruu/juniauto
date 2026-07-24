@@ -157,19 +157,47 @@ universe:
   # 30 liquid mega-caps + broad-market ETFs — enough to exercise the full
   # pipeline without hammering Alpaca IEX rate limits.
   symbols:
-    # Broad-market + sector ETFs
+    # ---- Broad-market + sector ETFs (tight IEX quotes, always pass guard) ----
     - SPY
+    - VOO
+    - IVV
     - QQQ
     - IWM
     - DIA
+    - VTI
+    - VUG
+    - VTV
     - XLK
     - XLF
     - XLE
     - XLV
-    # Mega-cap tech
+    - XLY
+    - XLP
+    - XLI
+    - XLU
+    - XLB
+    - XLC
+    - XLRE
+    - SOXX
+    - SMH
+    - ARKK
+    - EFA
+    - IEMG
+    - VXUS
+    # ---- Bond / commodity ETFs (diversifier exposure) ----
+    - TLT
+    - IEF
+    - HYG
+    - LQD
+    - AGG
+    - BND
+    - GLD
+    - SLV
+    # ---- Mega-cap tech (tight IEX quotes typically) ----
     - AAPL
     - MSFT
     - GOOGL
+    - GOOG
     - AMZN
     - META
     - NVDA
@@ -177,23 +205,86 @@ universe:
     - AMD
     - AVGO
     - ORCL
-    # Financials
+    - CRM
+    - ADBE
+    - INTC
+    - CSCO
+    - QCOM
+    - TXN
+    - IBM
+    - NOW
+    - INTU
+    # ---- Communications / media ----
+    - NFLX
+    - DIS
+    - CMCSA
+    - VZ
+    - T
+    # ---- Financials ----
     - JPM
     - BAC
+    - WFC
+    - C
     - GS
-    # Consumer
+    - MS
+    - AXP
+    - BLK
+    - SCHW
+    - V
+    - MA
+    - PYPL
+    # ---- Consumer ----
     - COST
     - WMT
     - HD
+    - LOW
     - MCD
-    # Industrials / energy
+    - SBUX
+    - NKE
+    - TGT
+    - PG
+    - KO
+    - PEP
+    - MDLZ
+    - COLM
+    - LULU
+    # ---- Industrials / energy ----
     - CAT
     - GE
+    - HON
+    - BA
+    - RTX
+    - UPS
+    - FDX
     - XOM
     - CVX
-    # Healthcare
+    - COP
+    - EOG
+    - SLB
+    # ---- Healthcare ----
     - LLY
     - UNH
+    - JNJ
+    - PFE
+    - MRK
+    - ABBV
+    - TMO
+    - ABT
+    - DHR
+    - AMGN
+    - GILD
+    # ---- Growth / momentum names commonly held ----
+    - PLTR
+    - SNOW
+    - CRWD
+    - PANW
+    - NET
+    - DDOG
+    - MDB
+    - SQ
+    - SHOP
+    - UBER
+    - ABNB
 
 # --- Data feeds ---
 alpaca:
@@ -203,10 +294,9 @@ alpaca:
 
 yahoo:
   fundamentals_ttl_days: 20                # match §1.3 halflife
-  # yfinance is scraping — flaky, slow, and rate-limited. Default off so the
-  # pipeline never blocks on it. Flip to true once you're happy with the
-  # feature quality it provides in your setup.
-  enabled: false
+  # Enabled: fundamentals feed the Bayesian's fundamental-quality group.
+  # curl_cffi + per-symbol timeouts + stale-cache fallback prevent hangs.
+  enabled: true
   max_workers: 4
   per_symbol_timeout_seconds: 8.0
 
