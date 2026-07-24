@@ -176,6 +176,11 @@ class UniverseConfig(BaseModel):
     # and for pinning a stable universe. Empty list = fall back to the
     # tape-filtered universe builder.
     symbols: list[str] = []
+    # Reject symbols whose IEX latest quote has a spread wider than this
+    # threshold, up-front with reject_reason=wide_spread. Prevents garbage
+    # IEX quotes on less-active names from producing huge false-negative
+    # rejections in the cost model.
+    max_spread_bps: float = 100.0
 
 
 class AlpacaConfig(BaseModel):

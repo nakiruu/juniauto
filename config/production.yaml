@@ -141,6 +141,13 @@ universe:
   min_market_cap: 500000000
   exchanges: [NYSE, NASDAQ]
   include_etfs: true
+  # Names whose IEX latest quote has a spread wider than this get rejected
+  # up-front with reject_reason=wide_spread. IEX is only one exchange, and
+  # for names with light IEX activity the "latest IEX quote" can be
+  # implausibly wide — pushing those through the cost model produces huge
+  # false-negative rejections. 100 bps ≈ 1% spread; anything above that
+  # on a mega-cap during regular hours is almost certainly stale/unreliable.
+  max_spread_bps: 100.0
   # MVP seed list. Set to [] to fall back to the full tape-filtered universe
   # builder (fetches every active NYSE/NASDAQ equity, ~11k names — slow).
   # 30 liquid mega-caps + broad-market ETFs — enough to exercise the full

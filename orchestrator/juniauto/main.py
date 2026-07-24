@@ -309,6 +309,21 @@ class JuniAuto:
             return self._reject_gw(pred, now, "no_quote")
         if not bars_list:
             return self._reject_gw(pred, now, "no_bars")
+        # Wide-spread guard: IEX-only quotes on names with light IEX activity
+        # are frequently implausible (100+ bps spreads on mega-caps during
+        # regular hours). Skip up-front rather than push garbage into the
+        # cost model, where it yields large false-negative rejections.
+        if quote.spread_bps > self.cfg.universe.max_spread_bps:
+            log.info(
+                "wide_spread_skip",
+                symbol=symbol,
+                spread_bps=round(quote.spread_bps, 1),
+                threshold_bps=self.cfg.universe.max_spread_bps,
+                bid=quote.bid,
+                ask=quote.ask,
+                mid=quote.mid,
+            )
+            return self._reject_gw(pred, now, "wide_spread")
 
         last_bar = bars_list[-1]
         state = qe.MarketState()
