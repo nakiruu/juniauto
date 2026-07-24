@@ -145,18 +145,24 @@ CREATE TABLE IF NOT EXISTS positions (
 ) TIMESTAMP(ts) PARTITION BY DAY WAL;
 
 -- ============================================================
--- Additive migrations for existing tables (idempotent — IF NOT EXISTS)
+-- Additive migrations for existing tables
 -- ============================================================
--- positions.* new columns (safe on fresh installs too; ALTER is a no-op then)
-ALTER TABLE positions ADD COLUMN IF NOT EXISTS target_weight DOUBLE;
-ALTER TABLE positions ADD COLUMN IF NOT EXISTS actual_weight DOUBLE;
-ALTER TABLE positions ADD COLUMN IF NOT EXISTS weight_drift_bps DOUBLE;
+-- QuestDB 8.x does NOT support `ADD COLUMN IF NOT EXISTS` (that's a Postgres
+-- extension). On fresh installs the columns are already declared in the
+-- CREATE TABLE bodies above so these ALTERs raise "column already exists" —
+-- benign, caught by apply_schema()'s idempotency handler. On upgrades from
+-- pre-weighting installs, they succeed and add the missing columns.
+
+-- positions.* new columns
+ALTER TABLE positions ADD COLUMN target_weight DOUBLE;
+ALTER TABLE positions ADD COLUMN actual_weight DOUBLE;
+ALTER TABLE positions ADD COLUMN weight_drift_bps DOUBLE;
 
 -- gateway_actions.* rebalance audit columns
-ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS rebalance_kind SYMBOL CAPACITY 8 CACHE;
-ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS target_weight DOUBLE;
-ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS current_weight DOUBLE;
-ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS delta_weight DOUBLE;
+ALTER TABLE gateway_actions ADD COLUMN rebalance_kind SYMBOL CAPACITY 8 CACHE;
+ALTER TABLE gateway_actions ADD COLUMN target_weight DOUBLE;
+ALTER TABLE gateway_actions ADD COLUMN current_weight DOUBLE;
+ALTER TABLE gateway_actions ADD COLUMN delta_weight DOUBLE;
 
 -- ============================================================
 -- Order / execution telemetry (§3.2 step 7)

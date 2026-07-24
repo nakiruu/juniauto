@@ -48,10 +48,13 @@ class QuestDBClient:
         statements = [s.strip() for s in cleaned.split(";") if s.strip()]
 
         # Match the substrings QuestDB returns for benign idempotency failures.
+        # QuestDB 8.x lacks `IF NOT EXISTS` on ALTER TABLE, so we rely on
+        # catching these on re-runs.
         benign_hints = (
             "column already exists",
             "duplicate column",
             "already exists",  # tables + generic
+            "column with name",  # "column with name X already exists"
         )
 
         with self._pg_conn() as conn:
