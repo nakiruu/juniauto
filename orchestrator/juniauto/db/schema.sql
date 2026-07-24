@@ -264,6 +264,26 @@ CREATE TABLE IF NOT EXISTS shadow_deltas (
 ) TIMESTAMP(ts) PARTITION BY DAY WAL;
 
 -- ============================================================
+-- Market regime observations (observation-only per coordinator review)
+-- One row per decision cycle (live + phantom). Records the raw components
+-- of the stress score, the EMA-smoothed stress, and the *implied* γ_risk
+-- multiplier — but the multiplier is NOT applied to sizing at this stage.
+-- After ~60 sessions of shadow data we compare counterfactual weight
+-- vectors against live and decide whether to promote to applied.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS market_regime (
+    ts                    TIMESTAMP,
+    cycle_type            SYMBOL CAPACITY 8 CACHE,   -- live | 0940 | 1230
+    spy_drawdown_pct      DOUBLE,                    -- (spy_close / spy_63d_high) - 1, clipped to [-1, 0]
+    spy_vol_pct_rank      DOUBLE,                    -- 21d realized vol percentile in trailing 252d, [0, 1]
+    avg_pairwise_corr     DOUBLE,                    -- mean pairwise 21d return correlation among top-50 by dollar volume
+    stress_raw            DOUBLE,                    -- blended stress score in [0, 1]
+    stress_ema            DOUBLE,                    -- EMA-smoothed stress (halflife = regime_stress_ema_halflife_days)
+    gamma_multiplier      DOUBLE,                    -- 1.0 + stress_ema * (gamma_risk_max/gamma_risk_base - 1.0). Observation-only.
+    n_symbols_corr        INT                        -- how many names actually contributed to the pairwise-corr average
+) TIMESTAMP(ts) PARTITION BY DAY WAL;
+
+-- ============================================================
 -- Source package evidence scores (§2.20)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS source_evidence (

@@ -37,7 +37,7 @@ from juniauto.portfolio import (
     select_top_k,
 )
 from juniauto.replay import ReplayHarness
-from juniauto.signals import compute_all
+from juniauto.signals import MarketRegimeSignals, compute_all
 from juniauto.utils import configure_logging, get_logger
 from juniauto.utils.time_utils import ET, quote_age_sessions, session_of
 
@@ -81,6 +81,11 @@ class JuniAuto:
         self.gw_cfg = qe.GatewayConfig()
         self.cost_cfg = qe.CostConfig()
         self.sizing_cfg = qe.SizingConfig()
+        # Market-regime observation signal (coordinator review 2026-07-24).
+        # Observation-only during shadow phase — computes stress + implied
+        # gamma_multiplier but does NOT modify Kelly while
+        # cfg.regime.apply_to_kelly=false. Cheap object, no external I/O.
+        self.regime = MarketRegimeSignals(cfg.regime)
         self._sched = AsyncIOScheduler(timezone=ET)
         self._stop = asyncio.Event()
 
@@ -257,6 +262,32 @@ class JuniAuto:
             log.error("step2_features_failed", error=str(e), error_type=type(e).__name__)
             return
 
+        # --- Step 2.5: market-regime observation (observation-only) ---
+        # Coordinator design review (2026-07-24) — compute + persist + emit,
+        # but do NOT feed gamma_multiplier into Kelly while
+        # cfg.regime.apply_to_kelly is false. Any failure here is best-effort:
+        # regime is diagnostic, never a hard dependency of the decision cycle.
+        if self.cfg.regime.enabled:
+            try:
+                prev_ema = self._load_prev_stress_ema()
+                snapshot = self.regime.compute(snap.bars_df(), prev_stress_ema=prev_ema)
+                self._emit_regime_metrics(snapshot, cycle_type=cycle_type)
+                self._persist_market_regime(snapshot, now, cycle_type=cycle_type)
+                log.info(
+                    "step2_5_regime",
+                    cycle_type=cycle_type,
+                    stress_raw=snapshot.stress_raw,
+                    stress_ema=snapshot.stress_ema,
+                    gamma_multiplier=snapshot.gamma_multiplier,
+                    dd_pct=snapshot.spy_drawdown_pct,
+                    vol_rank=snapshot.spy_vol_pct_rank,
+                    avg_corr=snapshot.avg_pairwise_corr,
+                    n_corr=snapshot.n_symbols_corr,
+                    applied_to_kelly=self.cfg.regime.apply_to_kelly,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("regime_observation_failed", error=str(e), error_type=type(e).__name__)
+
         # --- Step 3: source-package selector (§2.20) ---
         # MVP: single "default" package always active. Multi-source
         # G_p,t = decay * G_p,t-1 + realized_evidence with >=95bps threshold
@@ -374,7 +405,7 @@ class JuniAuto:
         if execute:
             self._persist_gateway_actions(gw_actions, now, horizon="1d")
         else:
-            self._persist_phantom_actions(gw_actions, now, horizon="1d", cycle_type=cycle_type)
+            self._persist_phantom_actions(gw_actions, now, horizon="1d", cycle_time=cycle_type)
 
         # Phantom cycles stop here — no orders, no PDT tracker updates, no
         # executions rows. Realized returns get backfilled by the hourly
@@ -994,6 +1025,76 @@ class JuniAuto:
                     },
                     at=ts,
                 )
+
+    def _load_prev_stress_ema(self) -> float | None:
+        """Fetch the most-recent EMA-smoothed stress from `market_regime` so
+        this cycle's EMA continues from the previous state. Cold-start
+        (no rows) returns None; the signal seeds EMA=stress_raw."""
+        try:
+            row = self.db.query_one(
+                """
+                SELECT stress_ema
+                  FROM market_regime
+                 WHERE stress_ema IS NOT NULL
+                 ORDER BY ts DESC
+                 LIMIT 1
+                """
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("regime_prev_ema_query_failed", error=str(e))
+            return None
+        if not row:
+            return None
+        val = row[0]
+        try:
+            return float(val) if val is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _emit_regime_metrics(
+        self, snapshot: "MarketRegimeSnapshot", *, cycle_type: str  # noqa: F821
+    ) -> None:
+        """Push regime components + implied gamma_multiplier to Prometheus.
+        Labels split by cycle_type so live and phantom cycles are separable."""
+        # NaN-safe: Prometheus can't accept NaN — we substitute -1 for missing
+        # so Grafana `!= -1` filters cleanly and stress in [0, 1] never overlaps.
+        def _finite(x: float) -> float:
+            return float(x) if x == x else -1.0  # NaN != NaN
+        m.regime_stress_raw_gauge.labels(cycle_type=cycle_type).set(_finite(snapshot.stress_raw))
+        m.regime_stress_ema_gauge.labels(cycle_type=cycle_type).set(_finite(snapshot.stress_ema))
+        m.regime_gamma_multiplier_gauge.labels(cycle_type=cycle_type).set(float(snapshot.gamma_multiplier))
+        m.regime_spy_drawdown_pct_gauge.labels(cycle_type=cycle_type).set(_finite(snapshot.spy_drawdown_pct))
+        m.regime_spy_vol_pct_rank_gauge.labels(cycle_type=cycle_type).set(_finite(snapshot.spy_vol_pct_rank))
+        m.regime_avg_pairwise_corr_gauge.labels(cycle_type=cycle_type).set(_finite(snapshot.avg_pairwise_corr))
+
+    def _persist_market_regime(
+        self,
+        snapshot: "MarketRegimeSnapshot",  # noqa: F821
+        ts: datetime,
+        cycle_type: str,
+    ) -> None:
+        """Append one row to `market_regime` via ILP. NaN components are
+        skipped so QuestDB stores NULL instead of NaN — makes Grafana's
+        IS NOT NULL filters do the right thing."""
+        columns: dict[str, float | int] = {"gamma_multiplier": float(snapshot.gamma_multiplier)}
+        if snapshot.spy_drawdown_pct == snapshot.spy_drawdown_pct:
+            columns["spy_drawdown_pct"] = float(snapshot.spy_drawdown_pct)
+        if snapshot.spy_vol_pct_rank == snapshot.spy_vol_pct_rank:
+            columns["spy_vol_pct_rank"] = float(snapshot.spy_vol_pct_rank)
+        if snapshot.avg_pairwise_corr == snapshot.avg_pairwise_corr:
+            columns["avg_pairwise_corr"] = float(snapshot.avg_pairwise_corr)
+        if snapshot.stress_raw == snapshot.stress_raw:
+            columns["stress_raw"] = float(snapshot.stress_raw)
+        if snapshot.stress_ema == snapshot.stress_ema:
+            columns["stress_ema"] = float(snapshot.stress_ema)
+        columns["n_symbols_corr"] = int(snapshot.n_symbols_corr)
+        with self.db.sender() as s:
+            s.row(
+                "market_regime",
+                symbols={"cycle_type": cycle_type},
+                columns=columns,
+                at=ts,
+            )
 
     def _persist_features(self, features: pd.DataFrame, ts: datetime) -> None:
         """Write one feature row per symbol to QuestDB via ILP. Skips NaN cells."""

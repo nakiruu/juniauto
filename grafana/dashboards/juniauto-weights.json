@@ -376,6 +376,103 @@
       "options": {"showHeader": true}
     },
     {
+      "id": 200,
+      "type": "row",
+      "title": "Market regime (observation-only, coordinator review 2026-07-24)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 68},
+      "collapsed": false
+    },
+    {
+      "id": 201,
+      "type": "timeseries",
+      "title": "Regime stress: raw vs EMA (live)",
+      "description": "Blended stress score in [0, 1]. Raw = per-cycle blend of SPY drawdown, SPY 21d vol percentile, and avg pairwise correlation of top-50 by dollar volume. EMA smooths raw with halflife=5 trading days. Observation-only — does NOT modify Kelly while regime.apply_to_kelly=false.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 69},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_regime_stress_raw{cycle_type=\"live\"} != -1", "refId": "A", "legendFormat": "raw"},
+        {"expr": "juniauto_regime_stress_ema{cycle_type=\"live\"} != -1", "refId": "B", "legendFormat": "ema"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 4, "fillOpacity": 5},
+          "min": 0, "max": 1, "unit": "short", "decimals": 3
+        }
+      }
+    },
+    {
+      "id": 202,
+      "type": "timeseries",
+      "title": "Implied gamma_risk multiplier (observation-only)",
+      "description": "1 + stress_ema × (gamma_risk_max/gamma_risk_base − 1). With default 1.0/3.0 span, multiplier ranges [1.0, 3.0]. This is what Kelly WOULD scale γ by if regime.apply_to_kelly=true. Threshold line at 1.0 = current live behavior.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 69},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_regime_gamma_multiplier{cycle_type=\"live\"}", "refId": "A", "legendFormat": "live"},
+        {"expr": "juniauto_regime_gamma_multiplier{cycle_type=\"0940\"}", "refId": "B", "legendFormat": "phantom 09:40"},
+        {"expr": "juniauto_regime_gamma_multiplier{cycle_type=\"1230\"}", "refId": "C", "legendFormat": "phantom 12:30"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 4, "fillOpacity": 3},
+          "min": 1.0, "max": 3.0, "unit": "short", "decimals": 3,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null},
+            {"color": "orange", "value": 1.5},
+            {"color": "red", "value": 2.0}
+          ]}
+        }
+      }
+    },
+    {
+      "id": 203,
+      "type": "timeseries",
+      "title": "Regime components (live)",
+      "description": "Individual stress inputs. SPY drawdown: 0 = at 63d high, -1 = 100% off. SPY vol percentile rank: 0 = calmest year, 1 = most volatile. Avg pairwise correlation: rising = systemic stress. All three feed the blended stress with weights 0.4 / 0.4 / 0.2.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 77},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_regime_spy_drawdown_pct{cycle_type=\"live\"} != -1", "refId": "A", "legendFormat": "SPY drawdown pct"},
+        {"expr": "juniauto_regime_spy_vol_pct_rank{cycle_type=\"live\"} != -1", "refId": "B", "legendFormat": "SPY 21d vol percentile"},
+        {"expr": "juniauto_regime_avg_pairwise_corr{cycle_type=\"live\"} != -1", "refId": "C", "legendFormat": "avg pairwise corr (top-50)"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 2, "pointSize": 4, "fillOpacity": 3},
+          "unit": "short", "decimals": 3
+        }
+      }
+    },
+    {
+      "id": 204,
+      "type": "table",
+      "title": "Regime observations (last 30 cycles, all cycle_types)",
+      "description": "Rolling audit of the regime signal. If gamma_multiplier column trends up during a real drawdown, that's evidence for promoting to apply_to_kelly=true. If it whipsaws day-to-day, the EMA halflife needs to be longer.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 85},
+      "interval": "",
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ts, cycle_type, spy_drawdown_pct, spy_vol_pct_rank, avg_pairwise_corr, stress_raw, stress_ema, gamma_multiplier, n_symbols_corr\n  FROM market_regime\n WHERE $__timeFilter(ts)\n ORDER BY ts DESC\n LIMIT 30"
+        }
+      ],
+      "options": {"showHeader": true},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}, "decimals": 4},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "spy_drawdown_pct"},  "properties": [{"id": "unit", "value": "percentunit"}]},
+          {"matcher": {"id": "byName", "options": "spy_vol_pct_rank"},  "properties": [{"id": "unit", "value": "percentunit"}]},
+          {"matcher": {"id": "byName", "options": "stress_raw"},        "properties": [{"id": "unit", "value": "percentunit"}]},
+          {"matcher": {"id": "byName", "options": "stress_ema"},        "properties": [{"id": "unit", "value": "percentunit"}]}
+        ]
+      }
+    },
+    {
       "id": 12,
       "type": "table",
       "title": "Latest top-K roster (from QuestDB)",

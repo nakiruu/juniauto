@@ -122,6 +122,34 @@ sizing:
   top_k_activation_cv_threshold: 0.05
   hysteresis_edge_delta_bps: 20.0
 
+# --- Market-regime observation (coordinator design review, 2026-07-24) ---
+# Observation-only shadow signal. Computes SPY drawdown + realized-vol
+# percentile + avg pairwise correlation into a scalar stress score, EMA-
+# smooths across cycles, and derives an *implied* gamma_risk multiplier.
+# The multiplier is written to `market_regime`, Prometheus, and Grafana
+# but NOT applied to Kelly while apply_to_kelly=false. Promote to
+# apply_to_kelly=true only after ~60 sessions of shadow verification.
+regime:
+  enabled: true
+  apply_to_kelly: false                    # SHADOW PHASE — do not flip without a promotion review
+
+  gamma_risk_base: 1.0                     # matches sizing.gamma_risk (§2.1)
+  gamma_risk_max: 3.0                      # Moreira & Muir (2017) equity-factor upper bound
+
+  drawdown_lookback_days: 63
+  vol_lookback_days: 21
+  vol_pct_lookback_days: 252
+  corr_top_n: 50
+  corr_lookback_days: 21
+
+  # Blend weights must sum to 1.0 (validated in load_config).
+  weight_drawdown: 0.4
+  weight_vol_percentile: 0.4
+  weight_correlation: 0.2
+
+  regime_stress_ema_halflife_days: 5.0     # 1 trading-week smoothing
+  reference_symbol: SPY
+
 # --- Shadow monitor (§2.41) ---
 shadow:
   prior_delta: 0.0

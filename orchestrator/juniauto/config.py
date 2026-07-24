@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field  # noqa: F401
 
 
 # ---------- Env interpolation ----------
@@ -182,6 +182,53 @@ class SizingConfig(BaseModel):
     hysteresis_edge_delta_bps: float = 20.0
 
 
+class RegimeConfig(BaseModel):
+    """Market-regime stress signal (observation-only, per coordinator review).
+
+    Blends three components into a scalar stress ∈ [0, 1]:
+        (a) SPY drawdown from 63-day high, normalized to [0, 1]
+        (b) SPY 21-day realized-vol percentile in trailing 252d
+        (c) mean pairwise 21d return correlation among the top-N by dollar volume
+
+    EMA-smooth with halflife=`regime_stress_ema_halflife_days` to prevent
+    single-day whipsaws from cascading into a large gamma swing. The implied
+    gamma_multiplier is *logged* to `market_regime` + Prometheus but NOT
+    applied to Kelly sizing while `apply_to_kelly=false`.
+
+    Promotion criterion: after ~60 sessions of shadow logging, compare
+    counterfactual weight vectors (γ × stress_ema) against live weights and
+    verify turnover cost < expected drawdown reduction.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    apply_to_kelly: bool = False                        # OBSERVATION-ONLY DURING SHADOW PHASE
+
+    # γ_risk multiplier range. base=1.0 matches sizing.gamma_risk (§2.1).
+    # max=3.0 is a soft upper bound — literature (Moreira & Muir 2017)
+    # suggests continuous vol-target scalars in the 1-3× range for equity.
+    gamma_risk_base: float = 1.0
+    gamma_risk_max: float = 3.0
+
+    # Component window params.
+    drawdown_lookback_days: int = 63                    # ~3 months trading; captures cyclical bear onset
+    vol_lookback_days: int = 21                         # ~1 month realized vol
+    vol_pct_lookback_days: int = 252                    # 1y percentile ranking window
+    corr_top_n: int = 50                                # top-N names by 20d dollar volume
+    corr_lookback_days: int = 21                        # same window as vol for symmetry
+
+    # Component blend weights. Must sum to 1.0; validated in load_config.
+    weight_drawdown: float = 0.4
+    weight_vol_percentile: float = 0.4
+    weight_correlation: float = 0.2
+
+    # EMA halflife for stress smoothing. 5 trading days ≈ 1 week.
+    # α = 1 - 0.5**(1/halflife) → halflife=5 → α ≈ 0.129 per cycle.
+    regime_stress_ema_halflife_days: float = 5.0
+
+    # Reference symbol for drawdown + vol.
+    reference_symbol: str = "SPY"
+
+
 class ShadowConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prior_delta: float
@@ -297,6 +344,7 @@ class JuniAutoConfig(BaseModel):
     bayesian: BayesianConfig
     costs: CostsConfig
     sizing: SizingConfig
+    regime: RegimeConfig = Field(default_factory=RegimeConfig)
     shadow: ShadowConfig
     freshness_halflife_days: dict[str, int]
     universe: UniverseConfig
@@ -347,4 +395,17 @@ def load_config(path: str | Path) -> JuniAutoConfig:
         )
     # Alpaca creds come from env, not YAML; resolve the correct paper/live pair.
     interpolated["alpaca"] = _resolve_alpaca(interpolated.get("alpaca", {}))
+    # Validate regime blend weights sum to 1.0 (±1e-6) if section provided.
+    reg = interpolated.get("regime")
+    if isinstance(reg, dict):
+        w = (
+            float(reg.get("weight_drawdown", 0.4))
+            + float(reg.get("weight_vol_percentile", 0.4))
+            + float(reg.get("weight_correlation", 0.2))
+        )
+        if abs(w - 1.0) > 1e-6:
+            raise ValueError(
+                f"regime.weight_* must sum to 1.0, got {w:.6f}. "
+                "Adjust weight_drawdown / weight_vol_percentile / weight_correlation."
+            )
     return JuniAutoConfig.model_validate(interpolated)

@@ -21,6 +21,7 @@ from juniauto.data.yahoo_feed import Fundamentals
 from juniauto.signals.event import EventSignals
 from juniauto.signals.fundamental import FundamentalSignals
 from juniauto.signals.liquidity import LiquiditySignals
+from juniauto.signals.regime import MarketRegimeSignals, MarketRegimeSnapshot
 from juniauto.signals.risk import RiskSignals
 from juniauto.signals.semantic import SemanticSignals
 from juniauto.signals.technical import TechnicalSignals
@@ -35,6 +36,8 @@ __all__ = [
     "SemanticSignals",
     "LiquiditySignals",
     "RiskSignals",
+    "MarketRegimeSignals",
+    "MarketRegimeSnapshot",
     "compute_all",
 ]
 

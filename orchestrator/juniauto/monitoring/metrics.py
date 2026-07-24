@@ -139,6 +139,52 @@ concentration_penalty_bps_gauge: Gauge = Gauge(
 )
 
 
+# ---- Market regime (coordinator review 2026-07-24, observation-only) ----
+# Components + blended stress + implied gamma_multiplier. The multiplier is
+# NOT applied to Kelly while regime.apply_to_kelly=false — these gauges are
+# for shadow verification. `cycle_type` labels split live vs phantom so we
+# can validate that phantom cycles see the same regime as live.
+
+regime_stress_raw_gauge: Gauge = Gauge(
+    "juniauto_regime_stress_raw",
+    "Raw blended market-regime stress in [0, 1] (0 = calm, 1 = high stress). "
+    "Blend of SPY drawdown, SPY 21d vol percentile, and avg pairwise correlation.",
+    labelnames=["cycle_type"],
+)
+
+regime_stress_ema_gauge: Gauge = Gauge(
+    "juniauto_regime_stress_ema",
+    "EMA-smoothed regime stress (halflife = regime.regime_stress_ema_halflife_days).",
+    labelnames=["cycle_type"],
+)
+
+regime_gamma_multiplier_gauge: Gauge = Gauge(
+    "juniauto_regime_gamma_multiplier",
+    "Implied gamma_risk multiplier = 1 + stress_ema * (gamma_risk_max/gamma_risk_base - 1). "
+    "OBSERVATION-ONLY: does not feed sizing while regime.apply_to_kelly=false.",
+    labelnames=["cycle_type"],
+)
+
+regime_spy_drawdown_pct_gauge: Gauge = Gauge(
+    "juniauto_regime_spy_drawdown_pct",
+    "SPY close / 63d-high - 1, clipped to [-1, 0] (deeper drawdown = more negative).",
+    labelnames=["cycle_type"],
+)
+
+regime_spy_vol_pct_rank_gauge: Gauge = Gauge(
+    "juniauto_regime_spy_vol_pct_rank",
+    "SPY 21d realized-vol percentile rank in trailing 252d, [0, 1].",
+    labelnames=["cycle_type"],
+)
+
+regime_avg_pairwise_corr_gauge: Gauge = Gauge(
+    "juniauto_regime_avg_pairwise_corr",
+    "Mean pairwise 21d return correlation among top-N by dollar volume, [-1, 1]. "
+    "Rising correlation signals systemic stress.",
+    labelnames=["cycle_type"],
+)
+
+
 # ---- Convenience helper ----
 
 class Metrics:
@@ -168,3 +214,9 @@ class Metrics:
     top_k_active_gauge = top_k_active_gauge
     edges_cv_gauge = edges_cv_gauge
     concentration_penalty_bps_gauge = concentration_penalty_bps_gauge
+    regime_stress_raw_gauge = regime_stress_raw_gauge
+    regime_stress_ema_gauge = regime_stress_ema_gauge
+    regime_gamma_multiplier_gauge = regime_gamma_multiplier_gauge
+    regime_spy_drawdown_pct_gauge = regime_spy_drawdown_pct_gauge
+    regime_spy_vol_pct_rank_gauge = regime_spy_vol_pct_rank_gauge
+    regime_avg_pairwise_corr_gauge = regime_avg_pairwise_corr_gauge
