@@ -82,6 +82,36 @@ pdt_blocked_total: Counter = Counter(
 )
 
 
+# ---- Reweight / portfolio construction (§2.28-2.30) ----
+
+weight_drift_bps_gauge: Gauge = Gauge(
+    "juniauto_weight_drift_bps",
+    "Per-symbol (actual - target) weight * 10000 at cycle close",
+    labelnames=["symbol"],
+)
+
+portfolio_turnover_ratio_gauge: Gauge = Gauge(
+    "juniauto_portfolio_turnover_ratio",
+    "Sum of |delta_weight_i| across all names in the last cycle (0..2)",
+)
+
+concentration_hhi_gauge: Gauge = Gauge(
+    "juniauto_concentration_hhi",
+    "Herfindahl-Hirschman index of the current target weight vector (0..1)",
+)
+
+shadow_ev_delta_bps_gauge: Gauge = Gauge(
+    "juniauto_shadow_ev_delta_bps",
+    "Expected-value delta of live Kelly scheme minus fixed-5% baseline, cycle-level",
+)
+
+rotation_rejects_total: Counter = Counter(
+    "juniauto_rotation_rejects_total",
+    "Cumulative rotation / rebalance rejections by reason",
+    labelnames=["reason"],
+)
+
+
 # ---- Convenience helper ----
 
 class Metrics:
@@ -102,3 +132,8 @@ class Metrics:
     shadow_promotion_ready_gauge = shadow_promotion_ready_gauge
     decision_cycle_seconds_hist = decision_cycle_seconds_hist
     pdt_blocked_total = pdt_blocked_total
+    weight_drift_bps_gauge = weight_drift_bps_gauge
+    portfolio_turnover_ratio_gauge = portfolio_turnover_ratio_gauge
+    concentration_hhi_gauge = concentration_hhi_gauge
+    shadow_ev_delta_bps_gauge = shadow_ev_delta_bps_gauge
+    rotation_rejects_total = rotation_rejects_total

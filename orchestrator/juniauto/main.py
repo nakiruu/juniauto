@@ -21,7 +21,8 @@ from juniauto.config import JuniAutoConfig, load_config
 from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
 from juniauto.execution import OrderManager, PDTTracker
-from juniauto.portfolio import Candidate, compute_target_weights
+from juniauto.monitoring import metrics as m
+from juniauto.portfolio import Candidate, compute_target_weights, fixed_equal_weights
 from juniauto.replay import ReplayHarness
 from juniauto.signals import compute_all
 from juniauto.utils import configure_logging, get_logger
@@ -330,11 +331,13 @@ class JuniAuto:
             )
             if not result.executed:
                 rejected += 1
+                reason = str(result.reject_reason or "unknown")
+                m.rotation_rejects_total.labels(reason=reason).inc()
                 log.info(
                     "order_rejected",
                     symbol=result.symbol,
                     kind=kind,
-                    reason=result.reject_reason,
+                    reason=reason,
                 )
                 continue
             if side == "buy":
@@ -370,19 +373,18 @@ class JuniAuto:
         current_weights: dict[str, float],
     ) -> list[dict[str, object]]:
         """Compute target weights across executed candidates, annotate each row
-        with target_weight / current_weight / delta_weight / rebalance_kind."""
+        with target_weight / current_weight / delta_weight / rebalance_kind, and
+        emit the reweight metrics (drift / turnover / HHI / shadow-EV delta)."""
         executed_syms = [str(a["symbol"]) for a in gw_actions if a["executed"]]
         # Composite edge is the pre-cost Kelly numerator (§2.7-2.8). For MVP with
         # sigma_total = 0 on cold start, the CV-based fallback in compute_target_weights
         # collapses to equal weight — same behaviour as fixed 5% but under one code path.
-        # sigma_total_bps is currently 0 across all candidates; sigma_floor (100 bps) applies.
         composite_by_sym: dict[str, float] = {}
         for a in gw_actions:
             if a["executed"]:
                 composite_by_sym[str(a["symbol"])] = float(a["gross_edge_bps"]) + float(
                     a["total_cost_bps"]
-                )  # reconstruct pre-cost edge; gross = composite - cash_wait so this is close
-        # Fall back to net_edge_bps if the reconstruction is degenerate.
+                )
         candidates = [
             Candidate(
                 symbol=sym,
@@ -391,29 +393,61 @@ class JuniAuto:
             )
             for sym in executed_syms
         ]
-        result = compute_target_weights(
+        live = compute_target_weights(
             candidates,
+            max_name_weight=self.cfg.sizing.max_name_weight,
+            cash_floor=self.cfg.sizing.cash_floor,
+        )
+        # Shadow baseline: what the naive fixed-5%/name scheme would have done
+        # on the same candidate set. Diff between the two feeds the EV-delta metric.
+        baseline = fixed_equal_weights(
+            candidates,
+            per_name_weight=0.05,
             max_name_weight=self.cfg.sizing.max_name_weight,
             cash_floor=self.cfg.sizing.cash_floor,
         )
         log.info(
             "target_weights",
-            scheme=result.scheme,
-            n_symbols=len(result.weights),
-            n_at_cap=result.n_at_name_cap,
-            cash_weight=round(result.cash_weight, 4),
+            scheme=live.scheme,
+            n_symbols=len(live.weights),
+            n_at_cap=live.n_at_name_cap,
+            cash_weight=round(live.cash_weight, 4),
+            baseline_scheme=baseline.scheme,
         )
 
+        turnover = 0.0
+        weighted_edge_live = 0.0
+        weighted_edge_baseline = 0.0
+        sum_w_sq = 0.0
         for a in gw_actions:
             sym = str(a["symbol"])
-            tw = float(result.weights.get(sym, 0.0))
+            tw = float(live.weights.get(sym, 0.0))
+            bw = float(baseline.weights.get(sym, 0.0))
             cw = float(current_weights.get(sym, 0.0))
             dw = tw - cw
+            edge = float(a.get("gross_edge_bps", 0.0))
             a["target_weight"] = tw
             a["current_weight"] = cw
             a["delta_weight"] = dw
             a["_capped_at_cap"] = tw >= self.cfg.sizing.max_name_weight - 1e-9
             a["rebalance_kind"] = self._classify_rebalance(a, tw, cw)
+            turnover += abs(dw)
+            weighted_edge_live += tw * edge
+            weighted_edge_baseline += bw * edge
+            sum_w_sq += tw * tw
+            m.weight_drift_bps_gauge.labels(symbol=sym).set(dw * 10_000.0)
+
+        m.portfolio_turnover_ratio_gauge.set(turnover)
+        m.concentration_hhi_gauge.set(sum_w_sq)
+        m.shadow_ev_delta_bps_gauge.set(weighted_edge_live - weighted_edge_baseline)
+
+        log.info(
+            "reweight_metrics",
+            turnover=round(turnover, 4),
+            hhi=round(sum_w_sq, 4),
+            ev_delta_bps=round(weighted_edge_live - weighted_edge_baseline, 2),
+            live_scheme=live.scheme,
+        )
         return gw_actions
 
     @staticmethod
