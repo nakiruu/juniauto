@@ -1,0 +1,209 @@
+{
+  "uid": "juniauto-weights",
+  "title": "JuniAuto Weights & Rebalance",
+  "tags": ["juniauto", "weights"],
+  "timezone": "America/New_York",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": {"from": "now-24h", "to": "now"},
+  "editable": true,
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Portfolio construction",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "gauge",
+      "title": "Concentration HHI",
+      "description": "Herfindahl-Hirschman index of target weights. See docs/knowledge-base/part4-gateway-execution.md §2.30.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_concentration_hhi", "refId": "A"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 0.5,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.15},
+              {"color": "red",    "value": 0.30}
+            ]
+          },
+          "decimals": 3
+        }
+      },
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Portfolio turnover (Σ|Δw| per cycle)",
+      "description": "Sum of absolute weight deltas across all names each cycle. Alert fires above 0.5.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 6, "y": 1},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_portfolio_turnover_ratio", "refId": "A", "legendFormat": "turnover"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 15},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red",   "value": 0.5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Cash weight (last cycle)",
+      "description": "1 minus Σ target_weight over all executed candidates.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 1},
+      "interval": "",
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT 1.0 - SUM(target_weight) AS cash_weight\n  FROM gateway_actions\n WHERE ts = (SELECT max(ts) FROM gateway_actions) AND executed = true"
+        }
+      ],
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
+        "textMode": "value",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.30},
+              {"color": "orange", "value": 0.60}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "Live vs baseline (shadow)",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9},
+      "collapsed": false
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Shadow EV delta bps (Kelly - fixed 5%)",
+      "description": "Cycle-level pre-cost weighted-edge improvement of Kelly vs fixed-5% baseline. Positive = Kelly captures more edge.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 10},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_shadow_ev_delta_bps", "refId": "A", "legendFormat": "EV_delta_bps"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "barchart",
+      "title": "Rotation rejects by reason (rate over 1h)",
+      "description": "Reasons the reweight step failed to submit an order — PDT gate, submit error, missing quote.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
+      "interval": "",
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(juniauto_rotation_rejects_total[1h]))",
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "showValue": "auto"
+      }
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Per-symbol detail",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18},
+      "collapsed": false
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Target vs current weight (latest cycle)",
+      "description": "Symbol-level view of the last reweight decision. See docs/knowledge-base/part4-gateway-execution.md §2.28-2.30.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 12, "w": 14, "x": 0, "y": 19},
+      "interval": "",
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT symbol, rebalance_kind, target_weight, current_weight, delta_weight, net_edge_bps, total_cost_bps\n  FROM gateway_actions\n WHERE ts = (SELECT max(ts) FROM gateway_actions)\n ORDER BY target_weight DESC"
+        }
+      ],
+      "options": {"showHeader": true},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "target_weight"},   "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]},
+          {"matcher": {"id": "byName", "options": "current_weight"},  "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]},
+          {"matcher": {"id": "byName", "options": "delta_weight"},    "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]}
+        ]
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Weight drift by symbol (bps)",
+      "description": "Per-symbol (actual - target) weight in bps over time. Positive = overweight vs target.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 12, "w": 10, "x": 14, "y": 19},
+      "interval": "",
+      "targets": [
+        {
+          "expr": "juniauto_weight_drift_bps",
+          "refId": "A",
+          "legendFormat": "{{symbol}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 0}
+        }
+      },
+      "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}}
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+groups:
+  - name: juniauto
+    interval: 60s
+    rules:
+      # Excessive cycle-to-cycle churn — usually indicates the dead-band is too
+      # tight for the current signal noise, or the ranking is genuinely unstable.
+      - alert: HighPortfolioTurnover
+        expr: juniauto_portfolio_turnover_ratio > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          service: juniauto
+        annotations:
+          summary: "Portfolio turnover exceeded 0.5"
+          description: "Cycle turnover is {{ $value | printf \"%.3f\" }} (threshold 0.5). Investigate ranking instability or widen sizing.rebalance_dead_band."
+
+      # Concentration guardrail — HHI above 0.30 means one or two names dominate
+      # (approximate: three names each at ~30% weight, or one at ~55%).
+      - alert: OverConcentrated
+        expr: juniauto_concentration_hhi > 0.30
+        for: 5m
+        labels:
+          severity: warning
+          service: juniauto
+        annotations:
+          summary: "Portfolio HHI concentration exceeded 0.30"
+          description: "HHI={{ $value | printf \"%.3f\" }} — check whether sizing.max_name_weight is being respected and whether the Bayesian is over-concentrating on a single-name signal."
+
+      # PDT ceiling proximity — starts warning at 2 day trades in the rolling
+      # window so the maintainer sees it before the hard 3-cap actually blocks.
+      - alert: PDTCapNear
+        expr: juniauto_day_trade_count >= 2
+        for: 5m
+        labels:
+          severity: warning
+          service: juniauto
+        annotations:
+          summary: "PDT day-trade count at {{ $value }} of 3"
+          description: "The next same-day close will consume the last PDT slot in the rolling 5-day window. Rebalance step will start rejecting SELL/ROTATE with pdt_day_trade_cap."

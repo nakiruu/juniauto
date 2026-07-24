@@ -69,6 +69,7 @@ services:
       - "31090:9090"   # host 31090 -> container 9090
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
       - ./data/prometheus:/prometheus
     restart: unless-stopped
     networks: [quant-net]
