@@ -24,7 +24,7 @@ from juniauto.execution import OrderManager, PDTTracker
 from juniauto.replay import ReplayHarness
 from juniauto.signals import compute_all
 from juniauto.utils import configure_logging, get_logger
-from juniauto.utils.time_utils import ET
+from juniauto.utils.time_utils import ET, quote_age_sessions, session_of
 
 log = get_logger(__name__)
 
@@ -178,8 +178,8 @@ class JuniAuto:
         # MVP: every candidate gets role=primary (460 bps prior).
         # Bayesian posterior returns 0 on cold start — no realized labels yet.
         # composite_edge = after_cost_edge + membership_bps * friction_multiplier.
-        role = qe.Role.Primary
-        membership_bps = qe.membership_edge_bps(role, self.gw_cfg)
+        role_enum = qe.Role.Primary
+        membership_bps = qe.membership_edge_bps(role_enum, self.gw_cfg)
         friction = self.cfg.model.friction_seed_primary
         predictions = []
         for symbol in features.index:
@@ -190,6 +190,7 @@ class JuniAuto:
             predictions.append({
                 "symbol": str(symbol),
                 "role": "primary",
+                "role_enum": role_enum,
                 "mu_edge_bps": after_cost_edge_bps,
                 "sigma_total_bps": sigma_total_bps,
                 "membership_edge_bps": membership_bps,
@@ -203,15 +204,204 @@ class JuniAuto:
         )
         self._persist_predictions(predictions, now, horizon="1d")
 
-        # Steps 5-7 still stubbed — next wiring commits.
-        for step in [
-            "5_execution_gate",
-            "6_order_routing",
-            "7_outcome_record",
-        ]:
+        # --- Step 5: gateway evaluation + cost breakdown (§2.24-2.26) ---
+        # For each candidate, build MarketState from the fresh snapshot,
+        # evaluate a proposed BUY through the C++ gateway, and persist the
+        # full cost breakdown to `gateway_actions`. This commit records
+        # decisions only — the next commit wires actual order submission.
+        open_orders = self.alpaca.get_open_orders()
+        open_symbols = {o["symbol"] for o in open_orders}
+        cycle_session = session_of(now)
+        gw_actions = []
+        for pred in predictions:
+            symbol = pred["symbol"]
+            action = self._evaluate_gateway(
+                pred=pred,
+                snap=snap,
+                account_equity=acct["equity"],
+                open_symbols=open_symbols,
+                session=cycle_session,
+                now=now,
+            )
+            gw_actions.append(action)
+        n_exec = sum(1 for a in gw_actions if a["executed"])
+        log.info(
+            "step5_gateway",
+            n_evaluated=len(gw_actions),
+            n_would_execute=n_exec,
+            n_would_reject=len(gw_actions) - n_exec,
+        )
+        self._persist_gateway_actions(gw_actions, now, horizon="1d")
+
+        # Steps 6-7 (order submission + outcome persistence) come next.
+        for step in ["6_order_routing_pending", "7_outcome_record_pending"]:
             log.info("cycle_step_stub", step=step)
 
         log.info("cycle_end")
+
+    # ---- Step 5 helpers ----
+    def _evaluate_gateway(
+        self,
+        *,
+        pred: dict[str, object],
+        snap: "MarketSnapshot",  # noqa: F821 — forward ref to avoid circular import
+        account_equity: float,
+        open_symbols: set[str],
+        session: str,
+        now: datetime,
+    ) -> dict[str, object]:
+        symbol = str(pred["symbol"])
+        quote = snap.quotes.get(symbol)
+        bars_list = snap.bars.get(symbol, [])
+
+        # Reject fast on missing observations — recorded, never crashes the loop.
+        if quote is None or quote.mid <= 0:
+            return self._reject_gw(pred, now, "no_quote")
+        if not bars_list:
+            return self._reject_gw(pred, now, "no_bars")
+
+        last_bar = bars_list[-1]
+        state = qe.MarketState()
+        state.mid_price = quote.mid
+        state.spread_bps = quote.spread_bps
+        state.volatility_bps = self._annualized_vol_bps(bars_list)
+        state.bar_dollar_volume = float(last_bar.close) * float(last_bar.volume or 0)
+        state.adv_dollar = self._adv_dollar(bars_list)
+        state.quote_age_sessions = quote_age_sessions(quote.ts, now)
+        state.gap_days_to_next_session = 0
+        state.session_multiplier = self.cfg.costs.session_multiplier.get(session, 1.0)
+        state.adverse_selection_share = self.cfg.costs.adverse_selection_share.get(session, 0.35)
+
+        slippage = qe.SlippageStats()
+        slippage.recent_fill_slippage_bps = 0.0  # cold-start
+
+        # MVP sizing: fixed 5% of equity per candidate. Real Kelly sizing in a later pass.
+        target_weight = min(0.05, self.sizing_cfg.max_name_weight)
+        notional = target_weight * float(account_equity)
+
+        order = qe.Order()
+        order.symbol = symbol
+        order.notional = notional
+        order.predicted_holding_seconds = float(self.cfg.costs.action_memory.horizon_seconds)
+        order.has_open_order = symbol in open_symbols
+
+        evaluation = qe.evaluate_gateway(
+            symbol,
+            pred["role_enum"],
+            float(pred["mu_edge_bps"]),
+            float(pred["friction_multiplier"]),
+            state,
+            slippage,
+            self.cost_cfg,
+            self.gw_cfg,
+            qe.ActionType.BUY,
+        )
+        cost = qe.compute_cost(order, state, slippage, self.cost_cfg, float(pred["composite_edge_bps"]))
+
+        executed = bool(evaluation.executes())
+        reject_reason = "" if executed else "net_edge_below_hurdle"
+
+        return {
+            "symbol": symbol,
+            "action_type": "BUY",
+            "role": str(pred["role"]),
+            "gross_edge_bps": float(evaluation.gross_edge_bps),
+            "entry_cost_bps": float(cost.entry_bps),
+            "exit_cost_reserved": float(cost.exit_reserved_bps),
+            "queue_delay_bps": float(cost.queue_delay_bps),
+            "cancel_replace_bps": float(cost.cancel_replace_bps),
+            "action_memory_bps": float(cost.action_memory_bps),
+            "cash_waiting_value": float(cost.cash_waiting_value_bps),
+            "operational_bps": float(cost.operational_bps),
+            "total_cost_bps": float(evaluation.total_cost_bps),
+            "net_edge_bps": float(evaluation.net_edge_bps),
+            "hurdle_bps": float(self.cfg.model.minimum_hurdle_bps),
+            "friction_multiplier": float(pred["friction_multiplier"]),
+            "executed": executed,
+            "reject_reason": reject_reason,
+            "notional": notional,
+            "mid_price": quote.mid,
+        }
+
+    @staticmethod
+    def _reject_gw(pred: dict[str, object], _now: datetime, reason: str) -> dict[str, object]:
+        return {
+            "symbol": str(pred["symbol"]),
+            "action_type": "HOLD",
+            "role": str(pred["role"]),
+            "gross_edge_bps": 0.0,
+            "entry_cost_bps": 0.0,
+            "exit_cost_reserved": 0.0,
+            "queue_delay_bps": 0.0,
+            "cancel_replace_bps": 0.0,
+            "action_memory_bps": 0.0,
+            "cash_waiting_value": 0.0,
+            "operational_bps": 0.0,
+            "total_cost_bps": 0.0,
+            "net_edge_bps": 0.0,
+            "hurdle_bps": 0.0,
+            "friction_multiplier": float(pred["friction_multiplier"]),
+            "executed": False,
+            "reject_reason": reason,
+            "notional": 0.0,
+            "mid_price": 0.0,
+        }
+
+    @staticmethod
+    def _annualized_vol_bps(bars_list: list) -> float:
+        """Roll-uncorrected annualized vol from close-to-close log returns.
+        Placeholder — Roll correction using quote spreads lands in a later pass."""
+        import math
+        closes = [float(b.close) for b in bars_list if b.close and b.close > 0]
+        if len(closes) < 2:
+            return 0.0
+        rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+        n = len(rets)
+        mean = sum(rets) / n
+        var = sum((r - mean) ** 2 for r in rets) / max(1, n - 1)
+        return 10_000.0 * math.sqrt(max(0.0, var) * 252.0)
+
+    @staticmethod
+    def _adv_dollar(bars_list: list, window: int = 20) -> float:
+        recent = bars_list[-window:]
+        if not recent:
+            return 0.0
+        vals = [float(b.close) * float(b.volume or 0) for b in recent if b.close and b.volume]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def _persist_gateway_actions(
+        self, actions: list[dict[str, object]], ts: datetime, horizon: str
+    ) -> None:
+        if not actions:
+            return
+        with self.db.sender() as s:
+            for a in actions:
+                s.row(
+                    "gateway_actions",
+                    symbols={
+                        "symbol": str(a["symbol"]),
+                        "action_type": str(a["action_type"]),
+                        "role": str(a["role"]),
+                        "horizon": horizon,
+                        "reject_reason": str(a["reject_reason"]) or "none",
+                    },
+                    columns={
+                        "gross_edge_bps": float(a["gross_edge_bps"]),
+                        "entry_cost_bps": float(a["entry_cost_bps"]),
+                        "exit_cost_reserved": float(a["exit_cost_reserved"]),
+                        "queue_delay_bps": float(a["queue_delay_bps"]),
+                        "cancel_replace_bps": float(a["cancel_replace_bps"]),
+                        "action_memory_bps": float(a["action_memory_bps"]),
+                        "cash_waiting_value": float(a["cash_waiting_value"]),
+                        "operational_bps": float(a["operational_bps"]),
+                        "total_cost_bps": float(a["total_cost_bps"]),
+                        "net_edge_bps": float(a["net_edge_bps"]),
+                        "hurdle_bps": float(a["hurdle_bps"]),
+                        "friction_multiplier": float(a["friction_multiplier"]),
+                        "executed": bool(a["executed"]),
+                    },
+                    at=ts,
+                )
 
     def _persist_predictions(
         self, predictions: list[dict[str, object]], ts: datetime, horizon: str
