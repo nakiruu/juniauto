@@ -55,6 +55,9 @@ services:
       # Misc
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - FED_FUNDS_RATE=${FED_FUNDS_RATE:-0.045}
+      # Safety gate — TRADING_ENABLED=true in .env arms real order submission.
+      # Defaults to false so a stray container start never places orders.
+      - TRADING_ENABLED=${TRADING_ENABLED:-false}
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs

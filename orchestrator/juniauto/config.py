@@ -309,6 +309,12 @@ def load_config(path: str | Path) -> JuniAutoConfig:
     # port is a string after interpolation of "${DB_PORT:-8812}"; coerce.
     if isinstance(interpolated.get("database", {}).get("port"), str):
         interpolated["database"]["port"] = int(interpolated["database"]["port"])
+    # trading_enabled is env-var driven ("${TRADING_ENABLED:-false}"); coerce string→bool.
+    sys_cfg = interpolated.get("system", {})
+    if isinstance(sys_cfg.get("trading_enabled"), str):
+        sys_cfg["trading_enabled"] = sys_cfg["trading_enabled"].strip().lower() in (
+            "true", "1", "yes", "on",
+        )
     # Alpaca creds come from env, not YAML; resolve the correct paper/live pair.
     interpolated["alpaca"] = _resolve_alpaca(interpolated.get("alpaca", {}))
     return JuniAutoConfig.model_validate(interpolated)

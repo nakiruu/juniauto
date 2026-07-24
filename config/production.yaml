@@ -7,9 +7,10 @@ system:
   version: 0.1.0
   environment: production
   timezone: America/New_York
-  # Safety gate — see SystemConfig docstring. Default off; flip to true only
-  # after reviewing gateway_actions from a dry-run cycle in the QuestDB console.
-  trading_enabled: false
+  # Safety gate. Env-var driven so you can flip trading on/off from .env
+  # without editing this file (which would then conflict on every git pull).
+  # Set TRADING_ENABLED=true in .env to arm live order submission.
+  trading_enabled: ${TRADING_ENABLED:-false}
 
 # --- Applied Model Parameters (§2.19) ---
 model:
