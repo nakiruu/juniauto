@@ -186,31 +186,49 @@ class YahooFeed:
             log.info("yahoo_cache_hit_all", n=len(out))
             return out
 
+        # Overall pool cap: generous — 4x per-symbol × ceil(cold/workers) + 10s
+        # slack. Individual future timeouts (per fut.result) still cap each
+        # symbol at self._timeout_s, so this outer bound only protects against
+        # a wedged pool (all workers hung simultaneously).
+        pool_timeout = max(
+            self._timeout_s * ((len(cold) + self._max_workers - 1) // self._max_workers) * 4 + 10,
+            30.0,
+        )
         log.info(
             "yahoo_fetch_start",
             n_cold=len(cold),
             workers=self._max_workers,
-            timeout_s=self._timeout_s,
+            per_symbol_timeout_s=self._timeout_s,
+            pool_timeout_s=pool_timeout,
         )
-        # Submit all fetches to the pool; collect with per-future timeout so a
-        # single hung request cannot stall the batch.
         with ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="yahoo") as pool:
             future_to_sym = {pool.submit(self._fetch_one, sym): sym for sym in cold}
-            for fut in as_completed(future_to_sym, timeout=self._timeout_s * len(cold) + 5):
-                sym = future_to_sym[fut]
-                try:
-                    f = fut.result(timeout=self._timeout_s)
-                    out[sym] = f
-                    self._save_cache(sym, f)
-                except (FuturesTimeout, RetryError, Exception) as e:  # noqa: BLE001
-                    stale = self._load_cache(sym, allow_stale=True)
-                    if stale is not None:
-                        log.warning("yahoo_fetch_failed_use_stale", symbol=sym, error=str(e))
-                        out[sym] = stale
-                    else:
-                        log.warning("yahoo_fetch_failed_no_cache", symbol=sym, error=str(e))
-                        out[sym] = _empty_fundamentals(sym)
+            try:
+                for fut in as_completed(future_to_sym, timeout=pool_timeout):
+                    sym = future_to_sym[fut]
+                    try:
+                        f = fut.result(timeout=self._timeout_s)
+                        out[sym] = f
+                        self._save_cache(sym, f)
+                    except (FuturesTimeout, RetryError, Exception) as e:  # noqa: BLE001
+                        out[sym] = self._fallback_after_fetch_fail(sym, str(e))
+            except FuturesTimeout:
+                # Pool-level cap hit — cancel every unfinished future and fill
+                # from stale cache / empty. One straggler cannot wedge the batch.
+                for fut, sym in future_to_sym.items():
+                    if sym in out:
+                        continue
+                    fut.cancel()
+                    out[sym] = self._fallback_after_fetch_fail(sym, "pool_timeout")
         return out
+
+    def _fallback_after_fetch_fail(self, sym: str, err: str) -> Fundamentals:
+        stale = self._load_cache(sym, allow_stale=True)
+        if stale is not None:
+            log.warning("yahoo_fetch_failed_use_stale", symbol=sym, error=err)
+            return stale
+        log.warning("yahoo_fetch_failed_no_cache", symbol=sym, error=err)
+        return _empty_fundamentals(sym)
 
     # ---- Single-symbol fetch with retry ----
     @retry(
