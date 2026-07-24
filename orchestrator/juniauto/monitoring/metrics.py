@@ -128,6 +128,16 @@ edges_cv_gauge: Gauge = Gauge(
     "Threshold for top-K activation is sizing.top_k_activation_cv_threshold",
 )
 
+concentration_penalty_bps_gauge: Gauge = Gauge(
+    "juniauto_concentration_penalty_bps",
+    "Aggregate Grinold-Kahn concentration penalty (§2.30) computed by C++ "
+    "qe.concentration_penalty_bps over the post-Kelly target-weight vector "
+    "with sizing.aggregate_comfortable_weight. Observation-only: currently "
+    "does NOT feed back into sizing decisions. Rising values indicate the "
+    "top-K is bunching weight into fewer effective names than the spec's "
+    "0.20 aggregate comfortable weight prescribes.",
+)
+
 
 # ---- Convenience helper ----
 
@@ -157,3 +167,4 @@ class Metrics:
     selected_k_gauge = selected_k_gauge
     top_k_active_gauge = top_k_active_gauge
     edges_cv_gauge = edges_cv_gauge
+    concentration_penalty_bps_gauge = concentration_penalty_bps_gauge

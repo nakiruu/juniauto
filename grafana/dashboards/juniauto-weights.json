@@ -304,12 +304,38 @@
       }
     },
     {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Concentration penalty (§2.30, observation-only)",
+      "description": "Aggregate Grinold-Kahn concentration penalty from qe.concentration_penalty_bps over the post-Kelly weight vector, evaluated against sizing.aggregate_comfortable_weight (0.20). Rising values = the top-K is bunching weight more than the spec's comfortable threshold. Does NOT currently feed back into decisions — soft-enforcement follow-up will use this to shape edges. See docs/knowledge-base/part4-gateway-execution.md § 2.30.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 38},
+      "interval": "",
+      "targets": [
+        {"expr": "juniauto_concentration_penalty_bps", "refId": "A", "legendFormat": "penalty bps"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 10},
+              {"color": "red", "value": 30}
+            ]
+          }
+        }
+      }
+    },
+    {
       "id": 12,
       "type": "table",
       "title": "Latest top-K roster (from QuestDB)",
       "description": "Names selected by top-K this cycle with target weight, current weight, drift, and net edge. Ranked by target_weight.",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
-      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 38},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 44},
       "interval": "",
       "targets": [
         {

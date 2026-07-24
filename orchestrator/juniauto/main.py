@@ -12,6 +12,7 @@ import signal
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import quant_engine as qe
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -613,11 +614,37 @@ class JuniAuto:
         m.concentration_hhi_gauge.set(sum_w_sq)
         m.shadow_ev_delta_bps_gauge.set(weighted_edge_live - weighted_edge_baseline)
 
+        # ---- Concentration penalty (§2.30 Grinold-Kahn shadow-price) ----
+        # Observation-only: compute the aggregate penalty from the post-Kelly
+        # weight vector using the C++ engine's qe.concentration_penalty_bps.
+        # Penalty grows quadratically with weights above the comfortable
+        # threshold. Not currently fed back into sizing decisions — full
+        # enforcement (fixed point: weights -> penalty -> adjusted edges ->
+        # weights) is a follow-up commit once we've seen the natural scale.
+        concentration_penalty = 0.0
+        try:
+            weight_arr = np.array(
+                [float(live.weights[s]) for s in live.weights if float(live.weights[s]) > 0.0],
+                dtype=float,
+            )
+            if weight_arr.size > 0:
+                concentration_penalty = float(
+                    qe.concentration_penalty_bps(
+                        weight_arr,
+                        float(self.cfg.sizing.aggregate_comfortable_weight),
+                    )
+                )
+        except Exception as _cp_exc:  # noqa: BLE001
+            log.warning("concentration_penalty_failed", error=str(_cp_exc))
+        m.concentration_penalty_bps_gauge.set(concentration_penalty)
+
         log.info(
             "reweight_metrics",
             turnover=round(turnover, 4),
             hhi=round(sum_w_sq, 4),
             ev_delta_bps=round(weighted_edge_live - weighted_edge_baseline, 2),
+            concentration_penalty_bps=round(concentration_penalty, 2),
+            comfortable_weight=float(self.cfg.sizing.aggregate_comfortable_weight),
             live_scheme=live.scheme,
         )
         return gw_actions
