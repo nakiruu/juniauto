@@ -1,0 +1,321 @@
+{
+  "uid": "juniauto-backtest",
+  "title": "JuniAuto Backtest Analysis",
+  "tags": ["juniauto", "backtest"],
+  "timezone": "America/New_York",
+  "schemaVersion": 39,
+  "refresh": "",
+  "time": {"from": "now-2y", "to": "now"},
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "run_id",
+        "label": "Run ID",
+        "type": "query",
+        "datasource": {"type": "postgres", "uid": "QuestDB"},
+        "query": "SELECT DISTINCT run_id FROM backtest_equity_curve ORDER BY run_id DESC",
+        "refresh": 1,
+        "multi": true,
+        "includeAll": false,
+        "current": {"selected": false, "text": "All", "value": "$__all"}
+      },
+      {
+        "name": "curve",
+        "label": "Curve type",
+        "type": "custom",
+        "query": "main,unconstrained,benchmark_spy,benchmark_ew,benchmark_fixed5",
+        "multi": true,
+        "includeAll": true,
+        "current": {"selected": true, "text": "All", "value": "$__all"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "Equity curve & benchmark comparison",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+      "collapsed": false
+    },
+    {
+      "id": 101,
+      "type": "timeseries",
+      "title": "Equity curves (all selected)",
+      "description": "Main (PDT-enforced) vs unconstrained (PDT bypassed) vs benchmarks. Overlaid so alpha and drag are visually obvious. Y-axis is dollar equity; start = initial_cash for every curve.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 1},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       equity AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "currencyUSD"}}
+    },
+    {
+      "id": 102,
+      "type": "timeseries",
+      "title": "Cumulative return vs benchmark (bps)",
+      "description": "Cumulative return in basis points, relative to initial_cash. Diverging curves = alpha; converging = drag.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 11},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       cum_return_bps AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short"}}
+    },
+    {
+      "id": 103,
+      "type": "timeseries",
+      "title": "Drawdown from running peak (%)",
+      "description": "Portfolio drawdown from prior peak. Deeper = worse. Compare main vs SPY to see if the strategy trades off vol for downside capture.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 11},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH ranked AS (\n  SELECT ts, run_id, curve_type, equity,\n         MAX(equity) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak\n    FROM backtest_equity_curve\n   WHERE run_id IN (${run_id:sqlstring})\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       100.0 * (equity / peak - 1.0) AS value\n  FROM ranked\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 20}, "unit": "percent"}}
+    },
+    {
+      "id": 110,
+      "type": "row",
+      "title": "Risk-adjusted metrics",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 19},
+      "collapsed": false
+    },
+    {
+      "id": 111,
+      "type": "table",
+      "title": "Metric summary (all selected runs and curves)",
+      "description": "Long/tall metrics table from backtest_metrics. Use column filters to focus on Sharpe, alpha, drawdown, etc.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 20},
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT run_id, curve_type, metric_name, ROUND(metric_value, 4) AS value, metric_unit\n  FROM backtest_metrics\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n ORDER BY run_id, curve_type, metric_name"
+        }
+      ],
+      "options": {"showHeader": true},
+      "fieldConfig": {"defaults": {"custom": {"align": "auto"}}}
+    },
+    {
+      "id": 112,
+      "type": "stat",
+      "title": "Sharpe (main curve)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 32},
+      "targets": [
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'sharpe_annualized' ORDER BY ts DESC LIMIT 1"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1.0}]}}}
+    },
+    {
+      "id": 113,
+      "type": "stat",
+      "title": "CAPM alpha (bps/yr, main)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 32},
+      "targets": [
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'capm_alpha_annualized_bps' ORDER BY ts DESC LIMIT 1"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "orange", "value": 0}, {"color": "green", "value": 100}]}}}
+    },
+    {
+      "id": 114,
+      "type": "stat",
+      "title": "Max DD (%, main)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 32},
+      "targets": [
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'max_drawdown_pct' ORDER BY ts DESC LIMIT 1"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": -10}, {"color": "red", "value": -20}]}}}
+    },
+    {
+      "id": 115,
+      "type": "stat",
+      "title": "CAGR (%, main)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 32},
+      "targets": [
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'cagr_pct' ORDER BY ts DESC LIMIT 1"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}}
+    },
+    {
+      "id": 116,
+      "type": "timeseries",
+      "title": "Rolling 63d Sharpe (main vs SPY)",
+      "description": "63-day rolling annualized Sharpe. Rising = strategy is compounding through this window; falling = alpha decay.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 36},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH ret AS (\n  SELECT ts, run_id, curve_type,\n         daily_return_bps / 10000.0 AS r\n    FROM backtest_equity_curve\n   WHERE run_id IN (${run_id:sqlstring})\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       (AVG(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW)\n        / NULLIF(STDDEV(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW), 0)\n        * SQRT(252)) AS value\n  FROM ret\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "decimals": 2}}
+    },
+    {
+      "id": 120,
+      "type": "row",
+      "title": "Cost attribution",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 44},
+      "collapsed": false
+    },
+    {
+      "id": 121,
+      "type": "timeseries",
+      "title": "Cost components per day (bps, aggregated across all fills)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 45},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time,\n       'entry' AS metric,\n       AVG(entry_cost_bps) AS value\n  FROM backtest_gateway_actions\n WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE\n   AND $__timeFilter(ts)\n GROUP BY ts\nUNION ALL\nSELECT ts, 'queue', AVG(queue_delay_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'action_memory', AVG(action_memory_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'operational', AVG(operational_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "stacking": {"mode": "normal"}}, "unit": "short"}}
+    },
+    {
+      "id": 122,
+      "type": "timeseries",
+      "title": "Gross edge vs net edge (bps, main)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 45},
+      "targets": [
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'gross_edge_bps' AS metric, AVG(gross_edge_bps) AS value FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"},
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'net_edge_bps' AS metric, AVG(net_edge_bps) AS value FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short"}}
+    },
+    {
+      "id": 130,
+      "type": "row",
+      "title": "Turnover & operations",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 53},
+      "collapsed": false
+    },
+    {
+      "id": 131,
+      "type": "timeseries",
+      "title": "Position count over time (main vs unconstrained)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
+      "targets": [
+        {
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       position_count AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN ('main', 'unconstrained')\n   AND $__timeFilter(ts)\n ORDER BY ts"
+        }
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "max": 30}}
+    },
+    {
+      "id": 132,
+      "type": "timeseries",
+      "title": "PDT day-trade count (main)",
+      "description": "Rolling 5-trading-day count with cap at 3. When this rides the cap, alpha is being throttled.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
+      "targets": [
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'pdt_count' AS metric, pdt_day_trade_count AS value FROM backtest_equity_curve WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND $__timeFilter(ts) ORDER BY ts"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "max": 5, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": 2}, {"color": "red", "value": 3}]}}}
+    },
+    {
+      "id": 133,
+      "type": "table",
+      "title": "Top 20 winners/losers by symbol (main, cumulative fill P&L)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 62},
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT symbol,\n       SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END) AS realized_pnl_usd,\n       SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) AS n_buys,\n       SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) AS n_sells,\n       AVG(slippage_bps) AS avg_slippage_bps\n  FROM backtest_executions\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type = 'main'\n GROUP BY symbol\n ORDER BY ABS(SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END)) DESC\n LIMIT 20"
+        }
+      ],
+      "options": {"showHeader": true}
+    },
+    {
+      "id": 140,
+      "type": "row",
+      "title": "Regime-conditioned performance",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 72},
+      "collapsed": false
+    },
+    {
+      "id": 141,
+      "type": "timeseries",
+      "title": "Regime stress (EMA) during backtest",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 73},
+      "targets": [
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, stress_ema AS value FROM backtest_market_regime WHERE run_id IN (${run_id:sqlstring}) AND stress_ema IS NOT NULL AND $__timeFilter(ts) ORDER BY ts"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "min": 0, "max": 1, "unit": "short", "decimals": 3}}
+    },
+    {
+      "id": 142,
+      "type": "bargauge",
+      "title": "Sharpe by regime quintile (main)",
+      "description": "Q1_calm through Q5_stress. Rising bars from Q1→Q5 = strategy shines under stress; falling = fair-weather system.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 73},
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT metric_name AS bucket, metric_value AS sharpe\n  FROM backtest_metrics\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type = 'main'\n   AND metric_name LIKE 'sharpe_by_regime_%'\n ORDER BY metric_name"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}}
+    },
+    {
+      "id": 150,
+      "type": "row",
+      "title": "Diagnostics",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 81},
+      "collapsed": false
+    },
+    {
+      "id": 151,
+      "type": "table",
+      "title": "Run metadata",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 6, "w": 24, "x": 0, "y": 82},
+      "targets": [
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT run_id, started_at, ended_at, start_date, end_date, fill_model, walkforward_days, universe_size, n_cycles, notes, cli_args FROM backtest_metadata WHERE run_id IN (${run_id:sqlstring}) ORDER BY started_at DESC"}
+      ],
+      "options": {"showHeader": true}
+    },
+    {
+      "id": 152,
+      "type": "timeseries",
+      "title": "Bayesian retrain events (n_samples)",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 88},
+      "targets": [
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, n_samples AS value FROM backtest_bayes_snapshots WHERE run_id IN (${run_id:sqlstring}) AND $__timeFilter(ts) ORDER BY ts"}
+      ],
+      "fieldConfig": {"defaults": {"custom": {"drawStyle": "points", "pointSize": 8, "fillOpacity": 0}, "unit": "short"}}
+    }
+  ]
+}

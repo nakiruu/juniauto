@@ -104,14 +104,18 @@ class JuniAuto:
                 message="trading_enabled=true AND paper=false — real orders will be sent to Alpaca live account",
             )
 
-        # ensure schema exists (idempotent)
-        schema = Path(__file__).parent / "db" / "schema.sql"
-        try:
-            self.db.apply_schema(schema)
-            log.info("schema_applied", path=str(schema))
-        except Exception as e:
-            log.error("schema_apply_failed", error=str(e))
-            raise
+        # ensure schema exists (idempotent). Live tables first, then
+        # backtest tables — the backtest schema is additive-only and safe
+        # to apply on every boot; if a run is in progress in another
+        # process, QuestDB WAL handles concurrent writes.
+        for name in ("schema.sql", "schema_backtest.sql"):
+            schema = Path(__file__).parent / "db" / name
+            try:
+                self.db.apply_schema(schema)
+                log.info("schema_applied", path=str(schema))
+            except Exception as e:
+                log.error("schema_apply_failed", error=str(e), path=str(schema))
+                raise
 
         if self.cfg.metrics.enabled:
             start_http_server(self.cfg.metrics.port)
