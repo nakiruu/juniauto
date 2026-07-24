@@ -132,17 +132,31 @@ class AlpacaFeed:
         }
 
     def get_positions(self) -> list[dict[str, Any]]:
-        return [
-            {
+        out = []
+        for p in self._trading.get_all_positions():  # type: ignore[union-attr]
+            # qty_available is the unencumbered SHARE count; qty may include
+            # fractional slivers Alpaca has held back for internal reasons.
+            # Use qty_available for SELL sizing to avoid "insufficient qty" errors.
+            qty_avail = float(getattr(p, "qty_available", p.qty) or p.qty)
+            out.append({
                 "symbol": p.symbol,
                 "qty": float(p.qty),
+                "qty_available": qty_avail,
                 "avg_entry_price": float(p.avg_entry_price),
                 "market_value": float(p.market_value),
                 "unrealized_pl": float(p.unrealized_pl),
                 "side": p.side.value if hasattr(p.side, "value") else str(p.side),
-            }
-            for p in self._trading.get_all_positions()  # type: ignore[union-attr]
-        ]
+            })
+        return out
+
+    def close_position(self, symbol: str) -> str:
+        """Close the entire position via Alpaca's dedicated API. Handles
+        fractional-share precision internally — safer than computing SELL qty
+        from get_positions and hoping it matches available."""
+        order = self._trading.close_position(symbol)  # type: ignore[union-attr]
+        oid = str(order.id)  # type: ignore[union-attr]
+        log.info("order_close_position", symbol=symbol, id=oid)
+        return oid
 
     def get_open_orders(self) -> list[dict[str, Any]]:
         req = GetOrdersRequest(status="open")  # type: ignore[arg-type]

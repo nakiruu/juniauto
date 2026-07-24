@@ -337,41 +337,67 @@ class JuniAuto:
             delta_w = float(a["delta_weight"])
             mid = float(a["mid_price"])
             symbol = str(a["symbol"])
+            target_w = float(a["target_weight"])
+            # Full exit = held name whose new target is zero (top-K dropped,
+            # or wide_spread orphan). Must bypass dead-band or tiny positions
+            # become permanent orphans and accrue leverage cycle-over-cycle.
+            is_full_exit = (
+                kind == "trim"
+                and target_w <= 0.0
+                and float(current_qtys.get(symbol, 0.0)) > 0.0
+            )
 
             # Dead-band: collapse cycle-to-cycle micro-drift into HOLD.
-            if kind in ("add", "trim") and abs(delta_w) < dead_band:
+            # NEVER dead-band a full exit.
+            if kind in ("add", "trim") and abs(delta_w) < dead_band and not is_full_exit:
                 held += 1
                 continue
             if kind in ("hold", "reject"):
                 held += 1
                 continue
 
-            # ---- SELL path: derive qty from actual position, floor to 4dp ----
+            # ---- SELL path: full exit uses close_position; partial uses qty_available ----
             if kind == "trim":
                 held_qty = float(current_qtys.get(symbol, 0.0))
                 if held_qty <= 0.0:
-                    # Nothing to trim (position may have closed between snapshots).
                     held += 1
                     continue
+
+                if is_full_exit:
+                    # Alpaca's close_position handles fractional-share precision
+                    # internally — safer than computing sell_qty from held_qty
+                    # and hoping it matches Alpaca's internal "available".
+                    try:
+                        oid = self.alpaca.close_position(symbol)
+                        # Record telemetry the same way order_manager would.
+                        self.pdt.note_close(
+                            symbol,
+                            open_ts=now,  # approximate; PDT logic tolerates this
+                            close_ts=now,
+                        ) if hasattr(self.pdt, "note_close") else None
+                        submitted_sell += 1
+                        log.info("order_full_exit", symbol=symbol, id=oid, held_qty=held_qty)
+                    except Exception as e:  # noqa: BLE001
+                        rejected += 1
+                        m.rotation_rejects_total.labels(reason="close_position_error").inc()
+                        log.warning("close_position_failed", symbol=symbol, error=str(e))
+                    continue
+
+                # Partial trim: sell exactly (held - target) shares, floored to 4dp.
                 target_qty = 0.0
-                if float(a["target_weight"]) > 0.0 and mid > 0.0:
-                    target_qty = float(a["target_weight"]) * float(acct["equity"]) / mid
+                if target_w > 0.0 and mid > 0.0:
+                    target_qty = target_w * float(acct["equity"]) / mid
                 delta_qty = held_qty - target_qty
-                # Floor to 4dp so we never request more than Alpaca reports as available.
                 sell_qty = math.floor(delta_qty * 10_000.0) / 10_000.0
                 if sell_qty <= 0.0:
                     held += 1
                     continue
-                action_type = "SELL" if float(a["target_weight"]) <= 0.0 else "ROTATE"
                 result = self.order_mgr.route(
                     symbol=symbol,
-                    action_type=action_type,
+                    action_type="ROTATE",
                     side="sell",
                     qty=sell_qty,
                     model_edge_bps=float(a["net_edge_bps"]),
-                    # decision_ref_price falls back to 1.0 when mid is unavailable
-                    # (orphan of a wide_spread-rejected symbol). Only used for
-                    # telemetry — Alpaca gets the market price.
                     decision_ref_price=mid if mid > 0.0 else 1.0,
                     limit_price=None,
                     horizon="1d",
@@ -438,15 +464,15 @@ class JuniAuto:
         return {p["symbol"]: float(p["market_value"]) / float(equity) for p in positions}
 
     def _current_qty_by_symbol(self) -> dict[str, float]:
-        """symbol -> actual share qty from Alpaca. Used to compute SELL qty
-        exactly from what we own, avoiding weight-derived precision errors
-        like "insufficient qty available: requested 0.5844, available 0.5843"."""
+        """symbol -> Alpaca-side qty_available (unencumbered shares). qty_available
+        excludes fractional slivers Alpaca has held back internally, so a SELL
+        of this value never triggers 'insufficient qty available'."""
         try:
             positions = self.alpaca.get_positions()
         except Exception as e:  # noqa: BLE001
             log.warning("current_qty_positions_fetch_failed", error=str(e))
             return {}
-        return {p["symbol"]: float(p["qty"]) for p in positions}
+        return {p["symbol"]: float(p.get("qty_available", p["qty"])) for p in positions}
 
     def _apply_target_weights(
         self,
