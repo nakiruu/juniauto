@@ -151,7 +151,12 @@ class JuniAuto:
         self._stop.set()
 
     # ---- Cycles ----
-    async def _daily_decision_cycle(self) -> None:
+    async def _daily_decision_cycle(
+        self,
+        *,
+        execute: bool = True,
+        cycle_type: str = "live",
+    ) -> None:
         """§3.2 seven-step decision cycle.
 
         1) refresh observations                 (wired: bars/quotes/fundamentals)
@@ -159,11 +164,19 @@ class JuniAuto:
         3) target gateway → candidates          (stub)
         4) provenance membership → prior action (stub)
         5) execution gate (posterior + costs)   (stub)
-        6) order routing                        (stub)
+        6) order routing                        (skipped when execute=False)
         7) outcome recording                    (stub)
+
+        `execute=True, cycle_type='live'`: normal path, writes to
+            gateway_actions, submits orders when trading_enabled.
+        `execute=False, cycle_type='0940'` (or similar): phantom cadence-
+            validation cycle. Runs steps 1-5.5, writes to
+            phantom_gateway_actions instead of gateway_actions, skips order
+            submission entirely. Used to compare basket-forward-returns
+            across decision times without exceeding PDT.
         """
         now = datetime.now(tz=ET)
-        log.info("cycle_start", ts=now.isoformat())
+        log.info("cycle_start", ts=now.isoformat(), cycle_type=cycle_type, execute=execute)
 
         # Guardrail: don't trade if PDT will block us for the whole cycle.
         acct = self.alpaca.get_account()
@@ -331,7 +344,24 @@ class JuniAuto:
             scheme_hint="kelly_or_equal_fallback",
         )
 
-        self._persist_gateway_actions(gw_actions, now, horizon="1d")
+        # Persist gateway actions — table branches on live vs phantom.
+        if execute:
+            self._persist_gateway_actions(gw_actions, now, horizon="1d")
+        else:
+            self._persist_phantom_actions(gw_actions, now, horizon="1d", cycle_type=cycle_type)
+
+        # Phantom cycles stop here — no orders, no PDT tracker updates, no
+        # executions rows. Realized returns get backfilled by the hourly
+        # phantom resolver, which reads bars and updates realized_return_bps
+        # on the phantom_gateway_actions rows.
+        if not execute:
+            log.info(
+                "phantom_cycle_end",
+                cycle_type=cycle_type,
+                n_would_submit=sum(1 for a in gw_actions if a["rebalance_kind"] == "entry"),
+                n_would_trim=sum(1 for a in gw_actions if a["rebalance_kind"] == "trim"),
+            )
+            return
 
         # --- Step 6-7: order routing + outcome record (§3.3, §3.2 step 7) ---
         # OrderManager writes to `executions` on submission and updates the PDT
@@ -839,6 +869,53 @@ class JuniAuto:
                     "gateway_actions",
                     symbols={
                         "symbol": str(a["symbol"]),
+                        "action_type": str(a["action_type"]),
+                        "role": str(a["role"]),
+                        "horizon": horizon,
+                        "reject_reason": str(a["reject_reason"]) or "none",
+                        "rebalance_kind": str(a.get("rebalance_kind", "reject")),
+                    },
+                    columns={
+                        "gross_edge_bps": float(a["gross_edge_bps"]),
+                        "entry_cost_bps": float(a["entry_cost_bps"]),
+                        "exit_cost_reserved": float(a["exit_cost_reserved"]),
+                        "queue_delay_bps": float(a["queue_delay_bps"]),
+                        "cancel_replace_bps": float(a["cancel_replace_bps"]),
+                        "action_memory_bps": float(a["action_memory_bps"]),
+                        "cash_waiting_value": float(a["cash_waiting_value"]),
+                        "operational_bps": float(a["operational_bps"]),
+                        "total_cost_bps": float(a["total_cost_bps"]),
+                        "net_edge_bps": float(a["net_edge_bps"]),
+                        "hurdle_bps": float(a["hurdle_bps"]),
+                        "friction_multiplier": float(a["friction_multiplier"]),
+                        "executed": bool(a["executed"]),
+                        "target_weight": float(a.get("target_weight", 0.0)),
+                        "current_weight": float(a.get("current_weight", 0.0)),
+                        "delta_weight": float(a.get("delta_weight", 0.0)),
+                    },
+                    at=ts,
+                )
+
+    def _persist_phantom_actions(
+        self,
+        actions: list[dict[str, object]],
+        ts: datetime,
+        horizon: str,
+        cycle_time: str,
+    ) -> None:
+        """Same shape as _persist_gateway_actions, different table + cycle_time
+        tag. realized_return_bps is intentionally NOT written here — the
+        phantom resolver backfills it later from bars.
+        """
+        if not actions:
+            return
+        with self.db.sender() as s:
+            for a in actions:
+                s.row(
+                    "phantom_gateway_actions",
+                    symbols={
+                        "symbol": str(a["symbol"]),
+                        "cycle_time": cycle_time,
                         "action_type": str(a["action_type"]),
                         "role": str(a["role"]),
                         "horizon": horizon,
