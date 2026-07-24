@@ -7,7 +7,6 @@ References: PRINCIPLESLONG.md §2.6-§2.8, §2.42.
 """
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -15,11 +14,13 @@ import pandas as pd
 
 import quant_engine as qe
 
+from juniauto.utils import get_logger
+
 if TYPE_CHECKING:
     from juniauto.config import JuniAutoConfig
     from juniauto.db import QuestDBClient
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Canonical feature column order — must match engine/src/data/features.cpp kLayout
