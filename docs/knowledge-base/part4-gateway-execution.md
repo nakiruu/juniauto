@@ -598,3 +598,26 @@ sizing.top_k_activation_cv_threshold        = 0.05
 sizing.hysteresis_edge_delta_bps            = 20.0
 sizing.max_name_weight                      = 0.15   (raised from 0.10 for K=8 floor)
 ```
+
+---
+
+## Appendix: concentration penalty (§2.30) — observation-only wiring
+
+`qe.concentration_penalty_bps(weights, comfortable_weight)` computes the Grinold-Kahn shadow-price penalty in bps for a given target-weight vector. It grows quadratically past the `comfortable_weight` threshold and represents the marginal cost of over-concentrating vs. a naive equal-weight benchmark.
+
+**Current wiring (observation-only):**
+
+After `compute_target_weights` produces the live Kelly weights (already respecting the hard `max_name_weight` cap), `_apply_target_weights` calls the C++ engine's penalty function with `aggregate_comfortable_weight` (default 0.20) and emits the result as the Prometheus gauge `juniauto_concentration_penalty_bps` and the `reweight_metrics` log line's `concentration_penalty_bps` field.
+
+**Does NOT currently feed back into decisions.** With K=8 and per-name cap of 0.15, weights typically sit at 10–13% each — well below the 20% comfortable threshold — so the aggregate penalty should stay near zero in most cycles. If it starts trending above ~10 bps regularly, that's the signal to promote to full enforcement.
+
+**Enforcement path (deferred to a follow-up commit):**
+
+The correct enforcement is a fixed-point iteration:
+1. Kelly produces weights `w_0`
+2. Compute penalty per name from `w_0`
+3. Subtract per-name penalty from each name's Kelly numerator
+4. Re-run Kelly to produce `w_1`
+5. Repeat until `‖w_i − w_{i−1}‖ < ε`
+
+For MVP the observation-only wiring is defensible because the K=8 hard cap already prevents pathological concentration and the penalty scale is unproven on live data. Ship, watch the gauge for a week, then enforce.
