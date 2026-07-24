@@ -190,6 +190,16 @@ class UniverseConfig(BaseModel):
     # IEX quotes on less-active names from producing huge false-negative
     # rejections in the cost model.
     max_spread_bps: float = 100.0
+    # ---- Pre-filter thresholds (observation-only for MVP) ----
+    # Log a warning per symbol whose observed ADV (close × volume, 20d mean)
+    # is below `min_adv_usd`. Currently informational — no removal from the
+    # candidate set. Once we've watched a few weeks of data, promote to hard
+    # enforcement by dropping the symbol before the gateway.
+    min_adv_usd: float = 50_000_000.0
+    # Typical historical spread threshold. Same observation-only semantics.
+    # Runtime wide-spread guard (max_spread_bps above) does the actual per-cycle
+    # rejection; this field is for offline curation of the seed list.
+    max_typical_spread_bps: float = 30.0
 
 
 class AlpacaConfig(BaseModel):

@@ -153,12 +153,17 @@ universe:
   # false-negative rejections. 100 bps ≈ 1% spread; anything above that
   # on a mega-cap during regular hours is almost certainly stale/unreliable.
   max_spread_bps: 100.0
+  # Pre-filter thresholds (observation-only for MVP — logs warnings for
+  # names below threshold but does not remove them from the candidate set).
+  # See UniverseConfig docstring for the promotion path to hard enforcement.
+  min_adv_usd: 50_000_000.0
+  max_typical_spread_bps: 30.0
   # MVP seed list. Set to [] to fall back to the full tape-filtered universe
   # builder (fetches every active NYSE/NASDAQ equity, ~11k names — slow).
   # 30 liquid mega-caps + broad-market ETFs — enough to exercise the full
   # pipeline without hammering Alpaca IEX rate limits.
   symbols:
-    # ---- Broad-market + sector ETFs (tight IEX quotes, always pass guard) ----
+    # ---- Broad-market ETFs ----
     - SPY
     - VOO
     - IVV
@@ -168,6 +173,16 @@ universe:
     - VTI
     - VUG
     - VTV
+    - MDY          # S&P 400 mid-cap
+    - IJH          # iShares Core S&P Mid-Cap
+    - IJR          # iShares Core S&P Small-Cap
+    - RSP          # equal-weight S&P 500
+    - MTUM         # momentum factor
+    - QUAL         # quality factor
+    - VLUE         # value factor
+    - USMV         # min-vol factor
+    - SPLV         # low-volatility S&P
+    # ---- Sector ETFs (SPDR + iShares) ----
     - XLK
     - XLF
     - XLE
@@ -179,22 +194,69 @@ universe:
     - XLB
     - XLC
     - XLRE
+    - IYW          # tech
+    - IYF          # financials
+    - IYH          # healthcare
+    - IYT          # transport
+    - IYR          # real estate
+    - VNQ          # REITs
+    - ITA          # aerospace/defense
+    - KBE          # banks
+    - KRE          # regional banks
+    - KIE          # insurance
+    - XBI          # biotech (SPDR)
+    - IBB          # biotech (iShares)
+    - IHI          # medical devices
     - SOXX
     - SMH
+    - CIBR         # cyber security
+    - HACK         # cyber security
+    - IGV          # software
+    - FDN          # internet
+    - JETS         # airlines
+    # ---- Thematic / international / commodity ETFs ----
     - ARKK
+    - ARKG
+    - ARKW
+    - TAN          # solar
+    - LIT          # lithium
+    - URA          # uranium
+    - REMX         # rare earth
+    - COPX         # copper miners
+    - GDX          # gold miners
+    - GDXJ         # junior gold
+    - XME          # metals
     - EFA
     - IEMG
     - VXUS
-    # ---- Bond / commodity ETFs (diversifier exposure) ----
+    - EEM
+    - FXI          # China large-cap
+    - EWJ          # Japan
+    - EWG          # Germany
+    - EWU          # UK
+    - EWZ          # Brazil
+    - INDA         # India
+    # ---- Bond / income ETFs ----
     - TLT
     - IEF
+    - SHY
     - HYG
     - LQD
     - AGG
     - BND
+    - JNK
+    - PFF          # preferred
+    - MUB          # municipal
+    - TIP          # inflation
+    - MBB          # mortgage-backed
+    # ---- Commodity ETFs ----
     - GLD
+    - IAU
     - SLV
-    # ---- Mega-cap tech (tight IEX quotes typically) ----
+    - USO
+    - UNG
+    - DBC          # broad commodities
+    # ---- Mega-cap tech ----
     - AAPL
     - MSFT
     - GOOGL
@@ -215,12 +277,44 @@ universe:
     - IBM
     - NOW
     - INTU
+    - AMAT
+    - LRCX
+    - KLAC
+    - MU
+    - ASML
+    - TSM
+    - MRVL
+    - WDC
+    - STX
+    - DELL
+    - HPQ
+    - HPE
+    - ANET
+    - PANW
+    - CRWD
+    - ZS
+    - OKTA
+    - NET
+    - DDOG
+    - MDB
+    - SNOW
+    - PLTR
+    - SHOP
+    - WDAY
+    - TEAM
+    - HUBS
+    - SPOT
+    - ROKU
+    - TWLO
     # ---- Communications / media ----
     - NFLX
     - DIS
     - CMCSA
     - VZ
     - T
+    - TMUS
+    - WBD
+    - PARA
     # ---- Financials ----
     - JPM
     - BAC
@@ -234,7 +328,23 @@ universe:
     - V
     - MA
     - PYPL
-    # ---- Consumer ----
+    - USB
+    - PNC
+    - TFC
+    - COF
+    - DFS
+    - ICE
+    - CME
+    - MET
+    - PRU
+    - AIG
+    - ALL
+    - CB
+    - TRV
+    - AFL
+    - BRK.B        # Berkshire
+    - SQ
+    # ---- Consumer discretionary + staples ----
     - COST
     - WMT
     - HD
@@ -247,9 +357,30 @@ universe:
     - KO
     - PEP
     - MDLZ
-    - COLM
     - LULU
-    # ---- Industrials / energy ----
+    - TJX
+    - ROST
+    - BBY
+    - EL
+    - CL
+    - KMB
+    - GIS
+    - KHC
+    - HSY
+    - MNST
+    - KDP
+    - STZ
+    - PM
+    - MO
+    - CMG
+    - YUM
+    - MAR
+    - HLT
+    - BKNG
+    - ABNB
+    - UBER
+    - LYFT
+    # ---- Industrials / transport ----
     - CAT
     - GE
     - HON
@@ -257,11 +388,36 @@ universe:
     - RTX
     - UPS
     - FDX
+    - DE
+    - LMT
+    - NOC
+    - GD
+    - TT
+    - ETN
+    - EMR
+    - ITW
+    - PH
+    - ROK
+    - MMM
+    - DAL
+    - AAL
+    - UAL
+    - LUV
+    # ---- Energy ----
     - XOM
     - CVX
     - COP
     - EOG
     - SLB
+    - OXY
+    - PSX
+    - MPC
+    - VLO
+    - HAL
+    - KMI
+    - WMB
+    - ET
+    - EPD
     # ---- Healthcare ----
     - LLY
     - UNH
@@ -274,18 +430,53 @@ universe:
     - DHR
     - AMGN
     - GILD
-    # ---- Growth / momentum names commonly held ----
-    - PLTR
-    - SNOW
-    - CRWD
-    - PANW
-    - NET
-    - DDOG
-    - MDB
-    - SQ
-    - SHOP
-    - UBER
-    - ABNB
+    - BMY
+    - ISRG
+    - MDT
+    - SYK
+    - BSX
+    - CI
+    - HUM
+    - CVS
+    - ELV
+    - REGN
+    - VRTX
+    - BIIB
+    - MRNA
+    - ZTS
+    # ---- Utilities ----
+    - NEE
+    - SO
+    - DUK
+    - D
+    - AEP
+    - EXC
+    - SRE
+    - PEG
+    # ---- Materials ----
+    - LIN
+    - APD
+    - FCX
+    - NEM
+    - DOW
+    - DD
+    - ECL
+    - SHW
+    - VMC
+    - MLM
+    - NUE
+    - STLD
+    # ---- Real estate (individual REITs) ----
+    - PLD
+    - AMT
+    - EQIX
+    - PSA
+    - WELL
+    - DLR
+    - O
+    - SPG
+    - CCI
+    - VICI
 
 # --- Data feeds ---
 alpaca:

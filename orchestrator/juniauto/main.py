@@ -183,6 +183,14 @@ class JuniAuto:
             log.error("step1_snapshot_failed", error=str(e), error_type=type(e).__name__)
             return  # can't proceed without observations
 
+        # Observation-only liquidity pre-filter (see UniverseConfig doc).
+        # Logs names below thresholds; does not remove them. Promote to hard
+        # enforcement once we've observed a few weeks and are comfortable.
+        try:
+            self._observe_liquidity(snap)
+        except Exception as e:  # noqa: BLE001
+            log.warning("liquidity_observation_failed", error=str(e))
+
         # --- Step 2: build feature vectors from the six signal families (§1.4) ---
         try:
             features = compute_all(
@@ -737,6 +745,38 @@ class JuniAuto:
                 )
                 n_written += 1
         log.info("step2_persisted", n_rows=n_written)
+
+    def _observe_liquidity(self, snap: "MarketSnapshot") -> None:  # noqa: F821
+        """Observation-only ADV pre-filter (see UniverseConfig).
+
+        Computes 20-day average dollar volume per symbol and logs a single
+        `liquidity_below_threshold` line naming every symbol under the config
+        threshold. Currently informational only — no removal from the
+        candidate set. Once we've watched a few cycles and are confident,
+        promote to hard enforcement by returning a filtered symbol list.
+        """
+        min_usd = float(self.cfg.universe.min_adv_usd)
+        if min_usd <= 0:
+            return
+        low: list[dict[str, object]] = []
+        for sym, series in snap.bars.items():
+            if not series:
+                continue
+            recent = series[-20:] if len(series) >= 20 else series
+            adv_usd = sum(
+                float(b.close) * float(b.volume or 0)
+                for b in recent
+                if b.close and b.volume
+            ) / max(1, len(recent))
+            if adv_usd > 0 and adv_usd < min_usd:
+                low.append({"symbol": sym, "adv_usd": round(adv_usd, 0)})
+        if low:
+            log.info(
+                "liquidity_below_threshold",
+                threshold_usd=min_usd,
+                n=len(low),
+                names=[str(x["symbol"]) for x in low],
+            )
 
     def _resolve_universe(self) -> list[str]:
         """Return the symbol list for this decision cycle.
