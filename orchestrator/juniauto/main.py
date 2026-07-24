@@ -11,6 +11,7 @@ import signal
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from prometheus_client import start_http_server
@@ -20,6 +21,7 @@ from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
 from juniauto.execution import OrderManager, PDTTracker
 from juniauto.replay import ReplayHarness
+from juniauto.signals import compute_all
 from juniauto.utils import configure_logging, get_logger
 from juniauto.utils.time_utils import ET
 
@@ -140,11 +142,29 @@ class JuniAuto:
             log.error("step1_snapshot_failed", error=str(e), error_type=type(e).__name__)
             return  # can't proceed without observations
 
-        # Steps 2-7 still stubbed — next wiring commits.
+        # --- Step 2: build feature vectors from the six signal families (§1.4) ---
+        try:
+            features = compute_all(
+                bars=snap.bars_df(),
+                fundamentals=snap.fundamentals,
+                quotes=snap.quotes,
+                as_of_date=now.date(),
+                halflife_event_days=self.cfg.freshness_halflife_days["event"],
+            )
+            log.info(
+                "step2_features",
+                n_symbols=len(features),
+                n_features=len(features.columns),
+            )
+            self._persist_features(features, now)
+        except Exception as e:  # noqa: BLE001
+            log.error("step2_features_failed", error=str(e), error_type=type(e).__name__)
+            return
+
+        # Steps 3-7 still stubbed — next wiring commits.
         for step in [
-            "2_source_selector",
-            "3_target_gateway",
-            "4_provenance_membership",
+            "3_source_selector",
+            "4_target_gateway_and_provenance",
             "5_execution_gate",
             "6_order_routing",
             "7_outcome_record",
@@ -152,6 +172,34 @@ class JuniAuto:
             log.info("cycle_step_stub", step=step)
 
         log.info("cycle_end")
+
+    def _persist_features(self, features: pd.DataFrame, ts: datetime) -> None:
+        """Write one feature row per symbol to QuestDB via ILP. Skips NaN cells."""
+        if features.empty:
+            log.warning("features_empty_skip_persist")
+            return
+        n_written = 0
+        with self.db.sender() as s:
+            for symbol, row in features.iterrows():
+                columns: dict[str, float | int | bool] = {}
+                for col, val in row.items():
+                    if pd.notna(val):
+                        # cast everything to float; ILP handles the wire type
+                        columns[str(col)] = float(val)
+                # Defaults for the two derived meta-columns not produced by compute_all.
+                # (§1.3 freshness_weight; §1.7 data_quality — both use 1.0 as MVP baseline.)
+                columns.setdefault("freshness_weight", 1.0)
+                columns.setdefault("data_quality", 1.0)
+                if not columns:
+                    continue
+                s.row(
+                    "features",
+                    symbols={"symbol": str(symbol)},
+                    columns=columns,
+                    at=ts,
+                )
+                n_written += 1
+        log.info("step2_persisted", n_rows=n_written)
 
     def _resolve_universe(self) -> list[str]:
         """Return the symbol list for this decision cycle.
