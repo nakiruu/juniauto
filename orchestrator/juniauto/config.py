@@ -200,6 +200,14 @@ class AlpacaConfig(BaseModel):
 class YahooConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     fundamentals_ttl_days: int
+    # Master kill switch. When False, YahooFeed short-circuits every call to
+    # empty Fundamentals — the pipeline runs without fundamentals and Bayesian
+    # cold-start composite edge is unaffected. Flip to True once yfinance is
+    # stable in your environment.
+    enabled: bool = False
+    # Concurrency + hard per-symbol timeout for the enabled path.
+    max_workers: int = 4
+    per_symbol_timeout_seconds: float = 8.0
 
 
 class DatabaseConfig(BaseModel):

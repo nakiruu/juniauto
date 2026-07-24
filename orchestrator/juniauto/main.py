@@ -34,7 +34,12 @@ class JuniAuto:
         self.cfg = cfg
         self.db = QuestDBClient(cfg.database)
         self.alpaca = AlpacaFeed(cfg.alpaca)
-        self.yahoo = YahooFeed(ttl_days=cfg.yahoo.fundamentals_ttl_days)
+        self.yahoo = YahooFeed(
+            ttl_days=cfg.yahoo.fundamentals_ttl_days,
+            enabled=cfg.yahoo.enabled,
+            max_workers=cfg.yahoo.max_workers,
+            per_symbol_timeout_seconds=cfg.yahoo.per_symbol_timeout_seconds,
+        )
         self.pdt = PDTTracker()
         self.universe = UniverseBuilder(self.alpaca._trading, cfg.universe)  # type: ignore[attr-defined]
         self.aggregator = DataAggregator(cfg, self.alpaca, self.yahoo, self.db)

@@ -20,7 +20,7 @@ Behaviour under rate limits:
 from __future__ import annotations
 
 import json
-import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -127,23 +127,44 @@ class _EmptyInfoError(RuntimeError):
 
 
 class YahooFeed:
-    """Read-through disk cache + per-symbol retry + rate limiting + browser impersonation.
+    """Read-through disk cache + parallel fetches with hard timeout + browser
+    impersonation.
 
-    Uses a persistent curl_cffi session that mimics Chrome's TLS + HTTP/2
-    fingerprint. Yahoo's rate limiter keys on fingerprint, so impersonating a
-    real browser (and reusing the session) drops 429 rates by roughly an order
-    of magnitude compared to the raw `requests` client yfinance uses by default.
+    - `enabled=False`: short-circuits to empty Fundamentals for every symbol.
+      The pipeline never blocks on yfinance. Use this when yfinance is flaky
+      in your environment (it usually is).
+    - `enabled=True`: parallel fetches with `max_workers` threads. Each future
+      is hard-capped at `per_symbol_timeout_seconds` so no single symbol can
+      hang the batch. On timeout or any non-retryable exception, falls back
+      to stale on-disk cache, then to empty Fundamentals.
+
+    Uses a persistent curl_cffi session mimicking Chrome's TLS + HTTP/2
+    fingerprint. curl_cffi Session is thread-safe as of 0.6+, so sharing
+    across workers is safe.
     """
 
-    def __init__(self, ttl_days: int = 20, request_delay_seconds: float = 0.25) -> None:
+    def __init__(
+        self,
+        ttl_days: int = 20,
+        enabled: bool = False,
+        max_workers: int = 4,
+        per_symbol_timeout_seconds: float = 8.0,
+    ) -> None:
         self._ttl = timedelta(days=ttl_days)
-        self._delay = request_delay_seconds
-        # One session shared across all fetches — connection reuse + steady
-        # fingerprint. `impersonate="chrome"` picks Yahoo's most-tolerated profile.
-        self._session = cffi_requests.Session(impersonate="chrome", timeout=15)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._enabled = enabled
+        self._max_workers = max(1, int(max_workers))
+        self._timeout_s = float(per_symbol_timeout_seconds)
+        self._session = cffi_requests.Session(impersonate="chrome", timeout=int(self._timeout_s))
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            log.warning("yahoo_cache_mkdir_failed", error=str(e))
 
     def get_fundamentals(self, symbols: list[str]) -> dict[str, Fundamentals]:
+        if not self._enabled:
+            log.info("yahoo_disabled_skip_all", n=len(symbols))
+            return {s: _empty_fundamentals(s) for s in symbols}
+
         out: dict[str, Fundamentals] = {}
         cold: list[str] = []
         n_etf = 0
@@ -165,24 +186,30 @@ class YahooFeed:
             log.info("yahoo_cache_hit_all", n=len(out))
             return out
 
-        log.info("yahoo_fetch_start", n_cold=len(cold), delay_ms=int(self._delay * 1000))
-        for i, sym in enumerate(cold):
-            try:
-                f = self._fetch_one(sym)
-                out[sym] = f
-                self._save_cache(sym, f)
-            except (RetryError, Exception) as e:  # noqa: BLE001 — never fail the batch
-                # Last-resort fallback: use any prior on-disk cache, even if TTL-stale.
-                stale = self._load_cache(sym, allow_stale=True)
-                if stale is not None:
-                    log.warning("yahoo_fetch_failed_use_stale", symbol=sym, error=str(e))
-                    out[sym] = stale
-                else:
-                    log.warning("yahoo_fetch_failed_no_cache", symbol=sym, error=str(e))
-                    out[sym] = _empty_fundamentals(sym)
-            # Rate limit between requests to reduce 429 pressure.
-            if i < len(cold) - 1:
-                time.sleep(self._delay)
+        log.info(
+            "yahoo_fetch_start",
+            n_cold=len(cold),
+            workers=self._max_workers,
+            timeout_s=self._timeout_s,
+        )
+        # Submit all fetches to the pool; collect with per-future timeout so a
+        # single hung request cannot stall the batch.
+        with ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="yahoo") as pool:
+            future_to_sym = {pool.submit(self._fetch_one, sym): sym for sym in cold}
+            for fut in as_completed(future_to_sym, timeout=self._timeout_s * len(cold) + 5):
+                sym = future_to_sym[fut]
+                try:
+                    f = fut.result(timeout=self._timeout_s)
+                    out[sym] = f
+                    self._save_cache(sym, f)
+                except (FuturesTimeout, RetryError, Exception) as e:  # noqa: BLE001
+                    stale = self._load_cache(sym, allow_stale=True)
+                    if stale is not None:
+                        log.warning("yahoo_fetch_failed_use_stale", symbol=sym, error=str(e))
+                        out[sym] = stale
+                    else:
+                        log.warning("yahoo_fetch_failed_no_cache", symbol=sym, error=str(e))
+                        out[sym] = _empty_fundamentals(sym)
         return out
 
     # ---- Single-symbol fetch with retry ----

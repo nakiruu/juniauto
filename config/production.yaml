@@ -192,6 +192,12 @@ alpaca:
 
 yahoo:
   fundamentals_ttl_days: 20                # match §1.3 halflife
+  # yfinance is scraping — flaky, slow, and rate-limited. Default off so the
+  # pipeline never blocks on it. Flip to true once you're happy with the
+  # feature quality it provides in your setup.
+  enabled: false
+  max_workers: 4
+  per_symbol_timeout_seconds: 8.0
 
 # --- Database ---
 database:
