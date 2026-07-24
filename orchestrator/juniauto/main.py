@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import signal
 from datetime import datetime
 from pathlib import Path
@@ -326,48 +327,79 @@ class JuniAuto:
         rejected = 0
         held = 0
         dead_band = float(self.cfg.sizing.rebalance_dead_band)
+        # Actual per-symbol share qty from Alpaca — for SELL precision.
+        # Derived from real positions, not from weights, so a full exit
+        # sells exactly what we own without 4th-decimal rounding errors.
+        current_qtys = self._current_qty_by_symbol()
 
         for a in gw_actions:
             kind = str(a["rebalance_kind"])
             delta_w = float(a["delta_weight"])
             mid = float(a["mid_price"])
+            symbol = str(a["symbol"])
 
             # Dead-band: collapse cycle-to-cycle micro-drift into HOLD.
             if kind in ("add", "trim") and abs(delta_w) < dead_band:
                 held += 1
                 continue
-
-            if kind == "hold" or kind == "reject":
+            if kind in ("hold", "reject"):
                 held += 1
                 continue
 
-            if mid <= 0:
-                rejected += 1
-                log.info("order_rejected", symbol=str(a["symbol"]), reason="no_mid_price")
+            # ---- SELL path: derive qty from actual position, floor to 4dp ----
+            if kind == "trim":
+                held_qty = float(current_qtys.get(symbol, 0.0))
+                if held_qty <= 0.0:
+                    # Nothing to trim (position may have closed between snapshots).
+                    held += 1
+                    continue
+                target_qty = 0.0
+                if float(a["target_weight"]) > 0.0 and mid > 0.0:
+                    target_qty = float(a["target_weight"]) * float(acct["equity"]) / mid
+                delta_qty = held_qty - target_qty
+                # Floor to 4dp so we never request more than Alpaca reports as available.
+                sell_qty = math.floor(delta_qty * 10_000.0) / 10_000.0
+                if sell_qty <= 0.0:
+                    held += 1
+                    continue
+                action_type = "SELL" if float(a["target_weight"]) <= 0.0 else "ROTATE"
+                result = self.order_mgr.route(
+                    symbol=symbol,
+                    action_type=action_type,
+                    side="sell",
+                    qty=sell_qty,
+                    model_edge_bps=float(a["net_edge_bps"]),
+                    # decision_ref_price falls back to 1.0 when mid is unavailable
+                    # (orphan of a wide_spread-rejected symbol). Only used for
+                    # telemetry — Alpaca gets the market price.
+                    decision_ref_price=mid if mid > 0.0 else 1.0,
+                    limit_price=None,
+                    horizon="1d",
+                    now=now,
+                )
+                if not result.executed:
+                    rejected += 1
+                    reason = str(result.reject_reason or "unknown")
+                    m.rotation_rejects_total.labels(reason=reason).inc()
+                    log.info("order_rejected", symbol=result.symbol, kind=kind, reason=reason)
+                    continue
+                submitted_sell += 1
                 continue
 
-            symbol = str(a["symbol"])
+            # ---- BUY path (entry / add): needs a valid mid_price ----
+            if mid <= 0.0:
+                rejected += 1
+                log.info("order_rejected", symbol=symbol, kind=kind, reason="no_mid_price")
+                continue
             notional_abs = abs(delta_w) * float(acct["equity"])
             qty = round(notional_abs / mid, 4)
-            if qty <= 0:
+            if qty <= 0.0:
                 held += 1
                 continue
-
-            if kind in ("entry", "add"):
-                side = "buy"
-                action_type = "BUY"
-            elif kind == "trim":
-                side = "sell"
-                # Full-exit if target dropped to zero; partial otherwise.
-                action_type = "SELL" if float(a["target_weight"]) <= 0.0 else "ROTATE"
-            else:
-                held += 1
-                continue
-
             result = self.order_mgr.route(
                 symbol=symbol,
-                action_type=action_type,
-                side=side,
+                action_type="BUY",
+                side="buy",
                 qty=qty,
                 model_edge_bps=float(a["net_edge_bps"]),
                 decision_ref_price=mid,
@@ -379,17 +411,9 @@ class JuniAuto:
                 rejected += 1
                 reason = str(result.reject_reason or "unknown")
                 m.rotation_rejects_total.labels(reason=reason).inc()
-                log.info(
-                    "order_rejected",
-                    symbol=result.symbol,
-                    kind=kind,
-                    reason=reason,
-                )
+                log.info("order_rejected", symbol=result.symbol, kind=kind, reason=reason)
                 continue
-            if side == "buy":
-                submitted_buy += 1
-            else:
-                submitted_sell += 1
+            submitted_buy += 1
 
         log.info(
             "step6_orders",
@@ -412,6 +436,17 @@ class JuniAuto:
             log.warning("current_weights_positions_fetch_failed", error=str(e))
             return {}
         return {p["symbol"]: float(p["market_value"]) / float(equity) for p in positions}
+
+    def _current_qty_by_symbol(self) -> dict[str, float]:
+        """symbol -> actual share qty from Alpaca. Used to compute SELL qty
+        exactly from what we own, avoiding weight-derived precision errors
+        like "insufficient qty available: requested 0.5844, available 0.5843"."""
+        try:
+            positions = self.alpaca.get_positions()
+        except Exception as e:  # noqa: BLE001
+            log.warning("current_qty_positions_fetch_failed", error=str(e))
+            return {}
+        return {p["symbol"]: float(p["qty"]) for p in positions}
 
     def _apply_target_weights(
         self,
@@ -538,17 +573,21 @@ class JuniAuto:
 
     @staticmethod
     def _classify_rebalance(action: dict[str, object], tw: float, cw: float) -> str:
-        # Rejected candidates keep their reject label under a single kind.
-        if not action["executed"]:
-            return "reject"
-        if cw <= 0.0 and tw > 0.0:
+        # Position-based classification: what we hold vs what we want determines
+        # the action, regardless of whether this specific candidate passed the
+        # gateway this cycle. A held name that got wide_spread-rejected THIS
+        # cycle still needs a SELL if target_weight is zero — otherwise it
+        # becomes an orphan that accrues leverage across cycles.
+        if cw > 0.0 and tw <= 0.0:
+            return "trim"   # full exit — includes held-but-rejected orphans
+        if cw > 0.0 and tw > cw:
+            return "add"
+        if cw > 0.0 and tw < cw:
+            return "trim"
+        if cw <= 0.0 and tw > 0.0 and action["executed"]:
             return "entry"
-        if tw <= 0.0 and cw > 0.0:
-            return "trim"  # full-close case; SELL logic lands in commit 4
-        if tw > cw:
-            return "add"   # increase existing position; commit 4 emits the delta-BUY
-        if tw < cw:
-            return "trim"  # decrease existing position; commit 4 emits the SELL
+        if not action["executed"]:
+            return "reject"  # rejected AND not held → nothing to do
         return "hold"
 
     # ---- Step 5 helpers ----
