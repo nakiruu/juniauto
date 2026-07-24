@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import quant_engine as qe
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from prometheus_client import start_http_server
@@ -39,6 +40,11 @@ class JuniAuto:
         self.aggregator = DataAggregator(cfg, self.alpaca, self.yahoo, self.db)
         self.order_mgr = OrderManager(self.alpaca, self.db, self.pdt)
         self.replay = ReplayHarness(cfg, self.db)
+        # C++ engine configs — defaults already match production.yaml, but
+        # instantiate here so the object lifetime spans the whole process.
+        self.gw_cfg = qe.GatewayConfig()
+        self.cost_cfg = qe.CostConfig()
+        self.sizing_cfg = qe.SizingConfig()
         self._sched = AsyncIOScheduler(timezone=ET)
         self._stop = asyncio.Event()
 
@@ -161,10 +167,44 @@ class JuniAuto:
             log.error("step2_features_failed", error=str(e), error_type=type(e).__name__)
             return
 
-        # Steps 3-7 still stubbed — next wiring commits.
+        # --- Step 3: source-package selector (§2.20) ---
+        # MVP: single "default" package always active. Multi-source
+        # G_p,t = decay * G_p,t-1 + realized_evidence with >=95bps threshold
+        # is deferred until we have realized outcomes across multiple sources.
+        active_package = "default"
+        log.info("step3_source", package=active_package)
+
+        # --- Step 4: provenance membership + composite edge (§2.22-2.22a) ---
+        # MVP: every candidate gets role=primary (460 bps prior).
+        # Bayesian posterior returns 0 on cold start — no realized labels yet.
+        # composite_edge = after_cost_edge + membership_bps * friction_multiplier.
+        role = qe.Role.Primary
+        membership_bps = qe.membership_edge_bps(role, self.gw_cfg)
+        friction = self.cfg.model.friction_seed_primary
+        predictions = []
+        for symbol in features.index:
+            after_cost_edge_bps = 0.0  # cold-start ridge; wired to real predict once
+                                       # we have realized forward-returns feedback
+            sigma_total_bps = 0.0
+            composite = qe.composite_edge(after_cost_edge_bps, membership_bps, friction)
+            predictions.append({
+                "symbol": str(symbol),
+                "role": "primary",
+                "mu_edge_bps": after_cost_edge_bps,
+                "sigma_total_bps": sigma_total_bps,
+                "membership_edge_bps": membership_bps,
+                "friction_multiplier": friction,
+                "composite_edge_bps": composite,
+            })
+        log.info(
+            "step4_provenance",
+            n_candidates=len(predictions),
+            composite_edge_bps=composite if predictions else 0.0,
+        )
+        self._persist_predictions(predictions, now, horizon="1d")
+
+        # Steps 5-7 still stubbed — next wiring commits.
         for step in [
-            "3_source_selector",
-            "4_target_gateway_and_provenance",
             "5_execution_gate",
             "6_order_routing",
             "7_outcome_record",
@@ -172,6 +212,32 @@ class JuniAuto:
             log.info("cycle_step_stub", step=step)
 
         log.info("cycle_end")
+
+    def _persist_predictions(
+        self, predictions: list[dict[str, object]], ts: datetime, horizon: str
+    ) -> None:
+        if not predictions:
+            return
+        with self.db.sender() as s:
+            for p in predictions:
+                s.row(
+                    "predictions",
+                    symbols={
+                        "symbol": str(p["symbol"]),
+                        "horizon": horizon,
+                        "role": str(p["role"]),
+                    },
+                    columns={
+                        "mu_edge_bps": float(p["mu_edge_bps"]),
+                        "sigma_edge_bps": float(p["sigma_total_bps"]),
+                        "sigma_total_bps": float(p["sigma_total_bps"]),
+                        "p_positive": 0.5,  # neutral cold-start
+                        "conservative_edge": float(p["mu_edge_bps"]),  # μ − zq·σ with σ=0
+                        "membership_edge": float(p["membership_edge_bps"]),
+                        "composite_edge": float(p["composite_edge_bps"]),
+                    },
+                    at=ts,
+                )
 
     def _persist_features(self, features: pd.DataFrame, ts: datetime) -> None:
         """Write one feature row per symbol to QuestDB via ILP. Skips NaN cells."""
