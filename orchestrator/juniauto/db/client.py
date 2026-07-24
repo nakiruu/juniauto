@@ -37,15 +37,38 @@ class QuestDBClient:
 
     # ---- Schema ----
     def apply_schema(self, schema_path: Path | str) -> None:
+        """Apply DDL from a .sql file. Idempotent-safe: statements whose
+        failures indicate "already present" (duplicate column / duplicate
+        table) are logged and skipped so container restarts don't crash
+        the migration."""
         raw = Path(schema_path).read_text(encoding="utf-8")
         # Order matters: block comments first (may span lines), then line comments.
         cleaned = _BLOCK_COMMENT.sub("", raw)
         cleaned = _LINE_COMMENT.sub("", cleaned)
         statements = [s.strip() for s in cleaned.split(";") if s.strip()]
-        with self._pg_conn() as conn, conn.cursor() as cur:
+
+        # Match the substrings QuestDB returns for benign idempotency failures.
+        benign_hints = (
+            "column already exists",
+            "duplicate column",
+            "already exists",  # tables + generic
+        )
+
+        with self._pg_conn() as conn:
             for stmt in statements:
-                cur.execute(stmt)  # type: ignore[arg-type]
-            conn.commit()
+                # Each DDL runs in its own transaction so one benign failure
+                # doesn't poison the connection state for the rest.
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(stmt)  # type: ignore[arg-type]
+                    conn.commit()
+                except psycopg.Error as e:
+                    msg = str(e).lower()
+                    if any(h in msg for h in benign_hints):
+                        conn.rollback()
+                        continue
+                    conn.rollback()
+                    raise
 
     # ---- Reads ----
     def query(self, sql: str, params: Sequence[Any] | None = None) -> list[tuple[Any, ...]]:

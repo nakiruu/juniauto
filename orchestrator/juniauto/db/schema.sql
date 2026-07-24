@@ -138,8 +138,25 @@ CREATE TABLE IF NOT EXISTS positions (
     avg_entry_price    DOUBLE,
     market_value       DOUBLE,
     unrealized_pl      DOUBLE,
-    side               SYMBOL CAPACITY 4 CACHE       -- long | short
+    side               SYMBOL CAPACITY 4 CACHE,      -- long | short
+    target_weight      DOUBLE,                        -- (weighting) last computed target w*_i (§2.28-2.30)
+    actual_weight      DOUBLE,                        -- (weighting) market_value / equity at snapshot time
+    weight_drift_bps   DOUBLE                         -- (weighting) (actual - target) * 10000
 ) TIMESTAMP(ts) PARTITION BY DAY WAL;
+
+-- ============================================================
+-- Additive migrations for existing tables (idempotent — IF NOT EXISTS)
+-- ============================================================
+-- positions.* new columns (safe on fresh installs too; ALTER is a no-op then)
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS target_weight DOUBLE;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS actual_weight DOUBLE;
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS weight_drift_bps DOUBLE;
+
+-- gateway_actions.* rebalance audit columns
+ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS rebalance_kind SYMBOL CAPACITY 8 CACHE;
+ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS target_weight DOUBLE;
+ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS current_weight DOUBLE;
+ALTER TABLE gateway_actions ADD COLUMN IF NOT EXISTS delta_weight DOUBLE;
 
 -- ============================================================
 -- Order / execution telemetry (§3.2 step 7)
