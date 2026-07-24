@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from prometheus_client import start_http_server
 
+from juniauto.bayesian import BayesianModel, resolve_stale_executions
 from juniauto.config import JuniAutoConfig, load_config
 from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
@@ -47,6 +48,22 @@ class JuniAuto:
         self.aggregator = DataAggregator(cfg, self.alpaca, self.yahoo, self.db)
         self.order_mgr = OrderManager(self.alpaca, self.db, self.pdt)
         self.replay = ReplayHarness(cfg, self.db)
+        # Bayesian model — instantiated after replay so DB is confirmed reachable.
+        # Immediately attempts retrain_from_db(); falls through to cold-start (0.0)
+        # if fewer than 30 resolved rows exist.
+        try:
+            self.bayes = BayesianModel(self.db, self.cfg)
+        except Exception as _bayes_init_exc:  # noqa: BLE001
+            log.warning("bayes_init_failed", error=str(_bayes_init_exc))
+
+            class _ColdStartBayes:
+                """Fallback when BayesianModel fails to construct."""
+                n_samples: int = 0
+                def is_trained(self) -> bool: return False
+                def predict(self, _row: object) -> tuple[float, float]: return 0.0, 0.0
+                def retrain_from_db(self) -> int: return 0
+
+            self.bayes = _ColdStartBayes()  # type: ignore[assignment]
         # C++ engine configs — defaults already match production.yaml, but
         # instantiate here so the object lifetime spans the whole process.
         self.gw_cfg = qe.GatewayConfig()
@@ -199,11 +216,26 @@ class JuniAuto:
         role_enum = qe.Role.Primary
         membership_bps = qe.membership_edge_bps(role_enum, self.gw_cfg)
         friction = self.cfg.model.friction_seed_primary
+        bayes_trained = self.bayes.is_trained()
+        log.info(
+            "bayesian_status",
+            trained=bayes_trained,
+            n_samples=self.bayes.n_samples,
+        )
         predictions = []
         for symbol in features.index:
-            after_cost_edge_bps = 0.0  # cold-start ridge; wired to real predict once
-                                       # we have realized forward-returns feedback
-            sigma_total_bps = 0.0
+            try:
+                if bayes_trained and symbol in features.index:
+                    mu, sigma = self.bayes.predict(features.loc[symbol])
+                    after_cost_edge_bps = float(mu)
+                    sigma_total_bps = float(sigma)
+                else:
+                    after_cost_edge_bps = 0.0
+                    sigma_total_bps = 0.0
+            except Exception as _pred_exc:  # noqa: BLE001
+                log.warning("bayesian_predict_error", symbol=str(symbol), error=str(_pred_exc))
+                after_cost_edge_bps = 0.0
+                sigma_total_bps = 0.0
             composite = qe.composite_edge(after_cost_edge_bps, membership_bps, friction)
             predictions.append({
                 "symbol": str(symbol),
@@ -725,15 +757,29 @@ class JuniAuto:
         """§3.2 slow-feedback loop.
 
         Persists account + open positions snapshot every hour so Grafana
-        panels stay current. Once step-7 wiring lands, this will also resolve
-        stale executions into realized_return_bps and update the shadow
-        monitor (§2.41).
+        panels stay current. Also resolves stale executions into
+        realized_return_bps and retrains the Bayesian ridge (§2.41).
         """
         log.info("resolution_start")
         try:
             self._persist_account_snapshot()
         except Exception as e:  # noqa: BLE001 — never let the loop die
             log.error("resolution_snapshot_failed", error=str(e), error_type=type(e).__name__)
+
+        # Resolve settled trades → realized_return_bps
+        try:
+            n_resolved = resolve_stale_executions(self.db, self.alpaca)
+            log.info("resolution_executions_resolved", n_resolved=n_resolved)
+        except Exception as e:  # noqa: BLE001
+            log.warning("resolution_executions_failed", error=str(e))
+
+        # Retrain ridge on any newly-resolved rows
+        try:
+            n_trained = self.bayes.retrain_from_db()
+            log.info("resolution_bayes_retrained", n_samples=n_trained)
+        except Exception as e:  # noqa: BLE001
+            log.warning("resolution_bayes_retrain_failed", error=str(e))
+
         log.info("resolution_end")
 
     def _persist_account_snapshot(self) -> None:
