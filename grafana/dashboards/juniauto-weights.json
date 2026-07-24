@@ -204,6 +204,129 @@
         }
       },
       "options": {"legend": {"displayMode": "table", "placement": "right", "showLegend": true}}
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Top-K selector",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31},
+      "collapsed": false
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Selected K (current)",
+      "description": "Names in the top-K selector output this cycle. 0 when top-K gate is skipped (cold-start / CV below threshold).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 0, "y": 32},
+      "interval": "",
+      "targets": [{"expr": "juniauto_selected_k", "refId": "A"}],
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
+        "textMode": "value",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "green", "value": 5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Top-K active?",
+      "description": "1 if the top-K gate fired this cycle (Bayesian trained AND CV >= threshold), 0 if skipped to uncapped Kelly.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 4, "x": 4, "y": 32},
+      "interval": "",
+      "targets": [{"expr": "juniauto_top_k_active", "refId": "A"}],
+      "options": {
+        "reduceOptions": {"values": false, "calcs": ["lastNotNull"]},
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "SKIPPED", "color": "orange"}, "1": {"text": "ACTIVE", "color": "green"}}}
+          ]
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Edges CV vs activation threshold",
+      "description": "Coefficient of variation of composite_edge across executed candidates. Top-K activates when this crosses the config threshold (sizing.top_k_activation_cv_threshold, default 0.05).",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 8, "y": 32},
+      "interval": "",
+      "targets": [{"expr": "juniauto_edges_cv", "refId": "A", "legendFormat": "cv"}],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 15},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "orange", "value": null},
+              {"color": "green", "value": 0.05}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Cumulative shadow EV delta (Kelly - fixed 5%)",
+      "description": "Rolling sum of per-cycle Kelly-vs-baseline pre-cost edge deltas. Positive-and-growing = Kelly is capturing more edge over time. See docs/knowledge-base/part4-gateway-execution.md § promotion rule.",
+      "datasource": {"type": "prometheus", "uid": "Prometheus"},
+      "gridPos": {"h": 6, "w": 8, "x": 16, "y": 32},
+      "interval": "",
+      "targets": [
+        {"expr": "sum_over_time(juniauto_shadow_ev_delta_bps[24h])", "refId": "A", "legendFormat": "24h sum"},
+        {"expr": "sum_over_time(juniauto_shadow_ev_delta_bps[7d])", "refId": "B", "legendFormat": "7d sum"}
+      ],
+      "fieldConfig": {
+        "defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0}}
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Latest top-K roster (from QuestDB)",
+      "description": "Names selected by top-K this cycle with target weight, current weight, drift, and net edge. Ranked by target_weight.",
+      "datasource": {"type": "postgres", "uid": "QuestDB"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 38},
+      "interval": "",
+      "targets": [
+        {
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT symbol, target_weight, current_weight, delta_weight, net_edge_bps, total_cost_bps, rebalance_kind\n  FROM gateway_actions\n WHERE ts = (SELECT max(ts) FROM gateway_actions)\n   AND target_weight > 0\n ORDER BY target_weight DESC"
+        }
+      ],
+      "options": {"showHeader": true},
+      "fieldConfig": {
+        "defaults": {"custom": {"align": "auto"}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "target_weight"},  "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]},
+          {"matcher": {"id": "byName", "options": "current_weight"}, "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]},
+          {"matcher": {"id": "byName", "options": "delta_weight"},   "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 4}]}
+        ]
+      }
     }
   ]
 }

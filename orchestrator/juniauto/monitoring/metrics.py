@@ -111,6 +111,23 @@ rotation_rejects_total: Counter = Counter(
     labelnames=["reason"],
 )
 
+selected_k_gauge: Gauge = Gauge(
+    "juniauto_selected_k",
+    "Number of names in the top-K selector output this cycle. Zero when the "
+    "top-K gate is skipped (cold-start / CV below threshold)",
+)
+
+top_k_active_gauge: Gauge = Gauge(
+    "juniauto_top_k_active",
+    "1 if top-K was active this cycle (Bayesian trained AND CV >= threshold), else 0",
+)
+
+edges_cv_gauge: Gauge = Gauge(
+    "juniauto_edges_cv",
+    "Coefficient of variation of composite_edge across executed candidates. "
+    "Threshold for top-K activation is sizing.top_k_activation_cv_threshold",
+)
+
 
 # ---- Convenience helper ----
 
@@ -137,3 +154,6 @@ class Metrics:
     concentration_hhi_gauge = concentration_hhi_gauge
     shadow_ev_delta_bps_gauge = shadow_ev_delta_bps_gauge
     rotation_rejects_total = rotation_rejects_total
+    selected_k_gauge = selected_k_gauge
+    top_k_active_gauge = top_k_active_gauge
+    edges_cv_gauge = edges_cv_gauge

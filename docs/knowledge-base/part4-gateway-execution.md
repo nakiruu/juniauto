@@ -561,3 +561,40 @@ aggregate_weight_i <= maxNameWeight * n_active_horizons   (hard cap)
 ```
 
 The `aggregate_weight` check runs after per-lane sizing and before any order is placed. Any name exceeding the aggregate cap has its per-lane weights proportionally reduced before submission.
+
+---
+
+## Appendix: top-K + shadow-EV promotion rule (JuniAuto extension, not in original spec)
+
+The system runs a hard `max_holdings=K` cap once the Bayesian model is informative (`is_trained() AND CV(edges) >= top_k_activation_cv_threshold`), with edge-delta hysteresis (default 20 bps) for incumbents to prevent rank-noise churn. Config knobs live under `sizing:` in `production.yaml`.
+
+**Shadow monitor for Kelly vs baseline:**
+
+Each cycle, `_apply_target_weights` computes weights under two schemes on the same executed candidate set:
+- **Live**: Kelly-fractional + top-K + hysteresis (via `compute_target_weights`).
+- **Baseline**: fixed 5% per name (via `fixed_equal_weights`).
+
+The dot product `Σ w_i · edge_i` under each scheme produces a per-cycle expected-value comparison. Their difference (`weighted_edge_live - weighted_edge_baseline`) is emitted as the Prometheus gauge `juniauto_shadow_ev_delta_bps` and shown on the Weights dashboard's "Cumulative shadow EV delta" panel.
+
+**Promotion criterion (pre-registered):**
+
+Let `δ_i` be the cycle-`i` value of `shadow_ev_delta_bps`. Treat the sequence as i.i.d. observations from `N(δ, σ²)` under a Normal-Normal conjugate prior with `κ₀ = 7` and `δ₀ = 0` (mirrors `shadow.prior_strength_kappa0` used for the challenger). After `n >= 40` observations, compute:
+```
+δ_post = (κ₀·δ₀ + n·mean(δ)) / (κ₀ + n)
+σ_post = σ_sample / sqrt(κ₀ + n)
+P(δ > 0 | data) = 1 - Φ(-δ_post / σ_post)
+```
+Kelly + top-K is considered validated when:
+1. `n >= 40` cycles have accumulated (roughly 2 trading months at daily cadence), AND
+2. `P(δ > 0 | data) >= 0.90`, AND
+3. The requirement holds for `k = 2` consecutive cycles (peeking correction, matches `shadow.required_consecutive_passes`).
+
+The scheme currently ships **already active**. Promotion here means "confirmed by statistical test that we should keep it on"; failure would be evidence to revert to uncapped equal-weight.
+
+**Config knobs governing this appendix:**
+```
+sizing.max_holdings                         = 8
+sizing.top_k_activation_cv_threshold        = 0.05
+sizing.hysteresis_edge_delta_bps            = 20.0
+sizing.max_name_weight                      = 0.15   (raised from 0.10 for K=8 floor)
+```

@@ -530,6 +530,10 @@ class JuniAuto:
             and cv >= float(self.cfg.sizing.top_k_activation_cv_threshold)
             and len(candidates) > int(self.cfg.sizing.max_holdings)
         )
+        # Observability: emit selector state to Prometheus regardless of gate.
+        m.edges_cv_gauge.set(cv)
+        m.top_k_active_gauge.set(1.0 if top_k_active else 0.0)
+
         if top_k_active:
             incumbents = {s for s, w in current_weights.items() if w > 0}
             surviving = select_top_k(
@@ -540,6 +544,7 @@ class JuniAuto:
             )
             surviving_syms = {c.symbol for c in surviving}
             n_incumbents_kept = sum(1 for c in surviving if c.symbol in incumbents)
+            m.selected_k_gauge.set(len(surviving))
             log.info(
                 "top_k_active",
                 k=len(surviving),
@@ -550,6 +555,7 @@ class JuniAuto:
             )
             candidates = surviving
         else:
+            m.selected_k_gauge.set(len(candidates))
             log.info(
                 "top_k_skipped",
                 bayes_trained=self.bayes.is_trained(),
