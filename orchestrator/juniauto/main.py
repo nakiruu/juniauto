@@ -237,13 +237,35 @@ class JuniAuto:
             trained=bayes_trained,
             n_samples=self.bayes.n_samples,
         )
+        # Kelly denominator: use realized daily volatility (annualized_bps / sqrt(252))
+        # as sigma_total. Deviates from §2.6 (which specifies mu - zq*sigma as the
+        # risk-adjusted numerator) because our Bayesian's trained y_mean is ~8 bps
+        # while daily realized vol is ~100-200 bps — strict spec discount would
+        # push every conservative_edge negative and collapse Kelly to all_cash.
+        # We keep composite (§2.22a: mu + membership*friction) as the positive
+        # ranking numerator and let realized-vol shape the Kelly denominator so
+        # ranking within top-K finally concentrates on lower-vol / higher-Sharpe.
+        SQRT_252 = math.sqrt(252.0)
         predictions = []
         for symbol in features.index:
             try:
                 if bayes_trained and symbol in features.index:
-                    mu, sigma = self.bayes.predict(features.loc[symbol])
+                    mu, epistemic_sigma = self.bayes.predict(features.loc[symbol])
                     after_cost_edge_bps = float(mu)
-                    sigma_total_bps = float(sigma)
+                    # Realized annualized vol from RiskSignals; NaN-safe.
+                    try:
+                        rvol_ann = float(features.loc[symbol].get("realized_vol_bps", 0.0))
+                        if not (rvol_ann == rvol_ann):  # NaN
+                            rvol_ann = 0.0
+                    except Exception:  # noqa: BLE001
+                        rvol_ann = 0.0
+                    daily_vol_bps = rvol_ann / SQRT_252 if rvol_ann > 0.0 else 0.0
+                    # sigma_total = max(daily realized vol, Bayesian epistemic).
+                    # Neither alone is right: epistemic is tiny (mean-uncertainty
+                    # only, ignores return noise); realized-vol is symbol-level
+                    # uncertainty ignoring model quality. max() is a defensible
+                    # conservative combiner for MVP.
+                    sigma_total_bps = max(daily_vol_bps, float(epistemic_sigma), 0.0)
                 else:
                     after_cost_edge_bps = 0.0
                     sigma_total_bps = 0.0
@@ -482,21 +504,18 @@ class JuniAuto:
         """Compute target weights across executed candidates, annotate each row
         with target_weight / current_weight / delta_weight / rebalance_kind, and
         emit the reweight metrics (drift / turnover / HHI / shadow-EV delta)."""
-        executed_syms = [str(a["symbol"]) for a in gw_actions if a["executed"]]
-        # Composite edge is the pre-cost Kelly numerator (§2.7-2.8). For MVP with
-        # sigma_total = 0 on cold start, the CV-based fallback in compute_target_weights
-        # collapses to equal weight — same behaviour as fixed 5% but under one code path.
-        composite_by_sym: dict[str, float] = {}
-        for a in gw_actions:
-            if a["executed"]:
-                composite_by_sym[str(a["symbol"])] = float(a["gross_edge_bps"]) + float(
-                    a["total_cost_bps"]
-                )
+        # Build Candidate list from the actions themselves — every action dict
+        # now carries composite_edge_bps and sigma_total_bps propagated from
+        # step 4's Bayesian predictions. Kelly numerator = composite (positive,
+        # spec-§2.22a). Kelly denominator = realized daily vol (per-symbol).
+        # See step-4 comment for the deviation-from-§2.6 rationale.
+        action_by_sym = {str(a["symbol"]): a for a in gw_actions}
+        executed_syms = [s for s, a in action_by_sym.items() if a["executed"]]
         candidates = [
             Candidate(
                 symbol=sym,
-                conservative_edge_bps=composite_by_sym.get(sym, 138.0),
-                sigma_total_bps=0.0,  # will populate once Bayesian trains
+                conservative_edge_bps=float(action_by_sym[sym].get("composite_edge_bps", 138.0)),
+                sigma_total_bps=float(action_by_sym[sym].get("sigma_total_bps", 0.0)),
             )
             for sym in executed_syms
         ]
@@ -717,6 +736,11 @@ class JuniAuto:
             "reject_reason": reject_reason,
             "notional": notional,
             "mid_price": quote.mid,
+            # Kelly-side scalars, propagated so _apply_target_weights doesn't
+            # need to hardcode sigma=0.
+            "mu_edge_bps": float(pred["mu_edge_bps"]),
+            "sigma_total_bps": float(pred["sigma_total_bps"]),
+            "composite_edge_bps": float(pred["composite_edge_bps"]),
         }
 
     @staticmethod
@@ -741,6 +765,12 @@ class JuniAuto:
             "reject_reason": reason,
             "notional": 0.0,
             "mid_price": 0.0,
+            # Even for rejected candidates we propagate the model scalars so
+            # held-but-rejected orphans have the right sigma when the top-K
+            # selector considers them for hysteresis.
+            "mu_edge_bps": float(pred["mu_edge_bps"]),
+            "sigma_total_bps": float(pred["sigma_total_bps"]),
+            "composite_edge_bps": float(pred["composite_edge_bps"]),
         }
 
     @staticmethod
