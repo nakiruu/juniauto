@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     cfg = load_config(args.config)
-    configure_logging(cfg.logging)
+    configure_logging(level=cfg.logging.level, json_file=None)
     log.info(
         "backtest_cli_start",
         run_id=args.run_id, start=str(args.start), end=str(args.end),
