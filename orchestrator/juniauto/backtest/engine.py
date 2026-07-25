@@ -126,14 +126,16 @@ class BacktestEngine:
 
         # Infrastructure
         self.db = QuestDBClient(cfg.database)
-        self.yahoo = YahooFeed(
-            ttl_days=cfg.yahoo.fundamentals_ttl_days,
-            enabled=cfg.yahoo.enabled,
-            max_workers=cfg.yahoo.max_workers,
-            per_symbol_timeout_seconds=cfg.yahoo.per_symbol_timeout_seconds,
-        )
+        # NO Yahoo in backtest. The live-side backfill's Bayesian training
+        # already baked fundamentals into the model, and the fundamental
+        # signal family gracefully returns empty when fundamentals=None.
+        # Calling YahooFeed per cycle was costing ~25s (10 cold symbols x
+        # 8s per-symbol timeout across 4 workers), turning a 1144-cycle
+        # backtest into a 9-hour ordeal. Disabling drops per-cycle time
+        # from ~28s to ~2s and total wall-time from ~9h to ~45min.
+        self.yahoo = None
         self.loader = HistoricalSnapshotLoader(
-            self.db, self.yahoo, history_bars=cfg.alpaca.history_bars
+            self.db, None, history_bars=cfg.alpaca.history_bars
         )
         self.clock = SimClock(start_date, end_date)
 
