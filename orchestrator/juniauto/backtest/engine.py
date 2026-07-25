@@ -185,6 +185,20 @@ class BacktestEngine:
         )
         self._write_metadata_open(started_at)
 
+        # Preload ALL bars for the window into memory in ONE query. This
+        # replaces the ~1144 per-cycle range queries that were dropping
+        # QuestDB PG-wire connections mid-response. Include 380 calendar
+        # days of history before start_date so the earliest cycles have
+        # enough lookback for signal computation.
+        earliest = datetime.combine(self.start_date - timedelta(days=int(self.cfg.alpaca.history_bars * 1.5)),
+                                    datetime.min.time(), tzinfo=ET)
+        latest = datetime.combine(self.end_date + timedelta(days=2),
+                                  datetime.max.time(), tzinfo=ET)
+        n_bars = self.loader.preload_all_bars(self.universe, earliest, latest)
+        if n_bars == 0:
+            log.error("backtest_preload_empty_aborting", run_id=self.run_id)
+            return
+
         wall_t0 = _time.monotonic()
         while True:
             try:
@@ -431,28 +445,20 @@ class BacktestEngine:
     # Bayesian walk-forward
     # ================================================================
     def _maybe_retrain_bayes(self, now: datetime) -> None:
-        if self.bayes is None:
-            return
-        if self.clock.index() - self._last_retrain_day_index < self.walkforward_days:
-            return
-        # Purged CV via 1-day embargo: BayesianModel.retrain_from_db already
-        # reads from `executions` where realized_return_bps IS NOT NULL. In
-        # backtest we don't populate executions.realized_return_bps directly —
-        # we rely on backfill_from_bars for the initial training set, and
-        # add cycle-resolved fills later. For now, retrain triggers a fresh
-        # fit against whatever the DB has. Snapshot posteriors for audit.
-        try:
-            n = self.bayes.retrain_from_db()
-            log.info(
-                "backtest_bayes_retrained",
-                ts=str(now), n_samples=n,
-                walkforward_days=self.walkforward_days,
-                idx=self.clock.index(),
-            )
-            self._last_retrain_day_index = self.clock.index()
-            self._persist_bayes_snapshot(now, n)
-        except Exception as e:  # noqa: BLE001
-            log.warning("backtest_bayes_retrain_failed", error=str(e))
+        # NO-OP during backtest. Previous implementation called
+        # bayes.retrain_from_db() every 21 days, but:
+        #   (a) that queries the LIVE `executions` table, not
+        #       backtest_executions, so it's re-reading the SAME backfilled
+        #       training set every retrain — no actual walk-forward learning,
+        #   (b) each retrain query has been unreliable (partition-file errors,
+        #       fd-closed errors from QuestDB's internal state),
+        #   (c) it was silently reducing every cycle to cold-start
+        #       predictions anyway (n_samples=0 in every retrain log).
+        # The Bayesian model loaded at engine __init__ (from the same
+        # backfilled data) is used unchanged for the whole backtest. True
+        # walk-forward would require querying backtest_executions with a
+        # proper embargo — deferred until we have a stable backtest run.
+        return
 
     # ================================================================
     # Predictions + gateway evaluation (adapted from live main.py)

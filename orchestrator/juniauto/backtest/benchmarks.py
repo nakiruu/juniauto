@@ -214,21 +214,29 @@ def benchmark_fixed5(
 def _load_daily_closes(
     db: QuestDBClient, symbol: str, start_date: date, end_date: date
 ) -> pd.Series:
+    # Two-stage query: outer date filter is done via `ts::date` which is
+    # cheap for QuestDB's partitioned tables, but the `symbol = %s` filter
+    # combined with `ts::date` casting has been unreliable on the PG wire
+    # under sustained load. We instead load ALL bars for the window and
+    # filter to `symbol` in Python — same pattern used by the engine's
+    # preload. Since we only call this once per benchmark run it's cheap.
     rows = db.query(
         """
-        SELECT ts::date AS d, close
+        SELECT ts::date AS d, symbol, close
           FROM bars
-         WHERE symbol = %s
-           AND ts::date >= %s::date
+         WHERE ts::date >= %s::date
            AND ts::date <= %s::date
          ORDER BY ts ASC
         """,
-        (symbol, start_date, end_date),
+        (start_date, end_date),
     )
     if not rows:
         return pd.Series(dtype=float)
-    idx = pd.DatetimeIndex([d for d, _ in rows])
-    return pd.Series([float(c) for _, c in rows], index=idx, name=symbol)
+    idx = [d for d, sym, _ in rows if sym == symbol]
+    values = [float(c) for _, sym, c in rows if sym == symbol]
+    if not values:
+        return pd.Series(dtype=float)
+    return pd.Series(values, index=pd.DatetimeIndex(idx), name=symbol)
 
 
 def _load_close_panel(
