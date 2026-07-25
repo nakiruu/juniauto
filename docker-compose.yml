@@ -11,8 +11,13 @@ services:
       - "31812:8812"   # host 31812 -> container 8812 (Postgres wire)
       - "31900:9000"   # host 31900 -> container 9000 (REST + web console)
       - "31909:9009"   # host 31909 -> container 9009 (ILP TCP ingest)
+    # QuestDB uses memory-mapped files and unsupported storage backends
+    # (Unraid FUSE /mnt/user, NFS, SMB) cause silent partition corruption
+    # under sustained write load. Use a docker named volume so storage
+    # lives in /var/lib/docker/volumes (typically on the cache pool
+    # directly, no FUSE layer). See QuestDB docs "Deploying" section.
     volumes:
-      - ./data/questdb:/var/lib/questdb
+      - questdb-data:/var/lib/questdb
       - ./config/questdb.conf:/var/lib/questdb/conf/server.conf:ro
     environment:
       - QDB_PG_USER=${DB_USER:-admin}
@@ -113,3 +118,8 @@ services:
 networks:
   quant-net:
     driver: bridge
+
+# Named volumes — see questdb service comment for why storage is here
+# rather than a ./data/questdb bind mount on Unraid FUSE.
+volumes:
+  questdb-data:

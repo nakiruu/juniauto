@@ -63,13 +63,17 @@ log = get_logger(__name__)
 ET = ZoneInfo("America/New_York")
 
 
-def _bars_slice_df(bars: dict[str, list[Bar]], cutoff: date) -> pd.DataFrame:
-    """DataFrame of bars where ts.date() <= cutoff, in the shape compute_all expects."""
+def _build_full_bars_df(bars: dict[str, list[Bar]]) -> pd.DataFrame:
+    """Build the whole bars DataFrame ONCE — call outside the per-date loop.
+
+    Previous impl rebuilt this per-date via a Python list-of-dicts, which
+    was O(all_bars) per call × O(n_dates) calls = O(all_bars × n_dates).
+    On a 1600-day backfill with 300 symbols that's ~765M tuple constructions
+    — literally hours. Building once is ~1s.
+    """
     rows: list[dict[str, object]] = []
     for sym, series in bars.items():
         for b in series:
-            if b.ts.date() > cutoff:
-                continue
             rows.append({
                 "symbol": sym,
                 "ts": b.ts,
@@ -84,9 +88,21 @@ def _bars_slice_df(bars: dict[str, list[Bar]], cutoff: date) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(
             columns=["symbol", "ts", "open", "high", "low", "close",
-                     "volume", "vwap", "trade_count"]
+                     "volume", "vwap", "trade_count", "_date"]
         )
-    return pd.DataFrame(rows).sort_values(["symbol", "ts"]).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(["symbol", "ts"]).reset_index(drop=True)
+    # Pre-compute per-bar date column so per-cutoff filtering is a
+    # vectorized comparison instead of a Python-side .dt.date per call.
+    df["_date"] = df["ts"].apply(lambda t: t.date() if hasattr(t, "date") else t)
+    return df
+
+
+def _bars_slice_df(df_all: pd.DataFrame, cutoff: date) -> pd.DataFrame:
+    """O(n) vectorized filter of the pre-built bars DataFrame."""
+    if df_all.empty:
+        return df_all
+    mask = df_all["_date"] <= cutoff
+    return df_all.loc[mask].drop(columns=["_date"], errors="ignore")
 
 
 def _close_by_date(bars: dict[str, list[Bar]]) -> dict[str, dict[date, float]]:
@@ -157,13 +173,20 @@ def backfill_from_bars(
     if len(usable_dates) > n_days:
         usable_dates = usable_dates[-n_days:]
 
+    # Build the full bars DataFrame ONCE. Per-date filter is a cheap
+    # vectorized mask below — was previously rebuilt from scratch every
+    # iteration (O(n²) in bar count × n_dates), which on a 1600-day
+    # backfill dominated wall-time.
+    bars_df_all = _build_full_bars_df(bars)
+    log.info("backfill_bars_df_built", n_rows=len(bars_df_all))
+
     n_written = 0
     with db.sender() as s:
         for i, date_t in enumerate(usable_dates):
             date_next = all_dates[all_dates.index(date_t) + 1]
 
             # Point-in-time feature computation: bars only up to date_t.
-            bars_df = _bars_slice_df(bars, date_t)
+            bars_df = _bars_slice_df(bars_df_all, date_t)
             if bars_df.empty:
                 continue
 
