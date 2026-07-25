@@ -16,10 +16,20 @@ Data-source policy (coordinator design review Q2 default):
     - Quotes are set to None / empty because we don't have historical
       IEX quotes at cycle-cadence resolution; the C++ gateway's
       wide_spread guard is bypassed accordingly (see engine).
+
+Transport: preload_all_bars uses QuestDB's REST /exp (CSV export)
+endpoint, NOT the PG wire. The PG wire has been unreliable under load
+(drops connections mid-response, malformed error frames, "fd already
+closed" internal errors) while REST is rock solid — every diagnostic
+curl during debugging succeeded. Since backtest preload is a single
+one-shot bulk read, REST is the right choice.
 """
 from __future__ import annotations
 
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta
+from io import StringIO
 
 import pandas as pd
 
@@ -73,72 +83,76 @@ class HistoricalSnapshotLoader:
         latest: datetime,
     ) -> int:
         """Load ALL bars in [earliest, latest] for `symbols` into memory in
-        ONE query. Call from the engine BEFORE the cycle loop starts.
+        ONE request via QuestDB's REST /exp (CSV export) endpoint.
 
-        Rationale: per-cycle range queries against QuestDB's PG wire have
-        been unreliable under sustained load — dropped connections,
-        malformed error frames, and internal 'fd already closed' errors.
-        A single large SELECT works fine (verified via curl on the REST
-        endpoint) and shipping ~450k rows over one psycopg fetch takes
-        ~1-2 seconds.
+        Rationale: QuestDB's PG wire drops even single large queries
+        mid-response with "server closed the connection unexpectedly" —
+        NOT a QuestDB crash (health is fine, memory is fine, storage is
+        fine), a psycopg-side parse failure on QuestDB's response frames.
+        The REST /exp endpoint returns clean CSV without going through
+        the PG wire and has been 100% reliable across all diagnostics.
+        For a 4.6y × 300-symbol window (~450k rows) the CSV is ~40 MB
+        and downloads in ~2-3 seconds.
 
         Returns the number of bar rows loaded. If 0, the backtest will
-        silently produce empty cycles — check bars table population.
+        silently produce empty cycles — check the log for the specific
+        REST-response error.
         """
-        # Load without any WHERE clause on symbol — the bars table only
-        # contains what the live pipeline / backfill wrote (which is our
-        # universe). Filter in Python for defensive isolation.
+        # Use ISO timestamps in the SQL string; QuestDB's REST endpoint
+        # doesn't support parameter substitution, but timestamp string
+        # literals work fine (and are unambiguous).
+        sql = (
+            "SELECT symbol, ts, open, high, low, close, volume, "
+            "COALESCE(vwap, 0.0) AS vwap, COALESCE(trade_count, 0) AS trade_count "
+            "FROM bars "
+            f"WHERE ts >= '{earliest.isoformat()}' AND ts <= '{latest.isoformat()}' "
+            "ORDER BY symbol ASC, ts ASC"
+        )
         try:
-            rows = self._db.query(
-                """
-                SELECT symbol, ts, open, high, low, close, volume, vwap, COALESCE(trade_count, 0)
-                  FROM bars
-                 WHERE ts >= %s AND ts <= %s
-                 ORDER BY symbol ASC, ts ASC
-                """,
-                (earliest, latest),
-            )
+            df = self._rest_query_df(sql)
         except Exception as e:  # noqa: BLE001
-            log.error("preload_bars_query_failed", error=str(e), error_type=type(e).__name__)
+            log.error("preload_bars_rest_failed", error=str(e), error_type=type(e).__name__)
             self._all_bars_df = pd.DataFrame()
             self._bars_by_symbol = {}
             return 0
 
-        if not rows:
+        if df.empty:
             log.warning("preload_bars_empty", earliest=str(earliest), latest=str(latest))
             self._all_bars_df = pd.DataFrame()
             self._bars_by_symbol = {}
             return 0
 
-        # Build once into both a DataFrame (for pandas filtering) and a
-        # symbol->[Bar] dict (matches the aggregator's shape).
+        # Filter to requested universe.
         requested = set(symbols)
+        df = df[df["symbol"].isin(requested)].reset_index(drop=True)
+        if df.empty:
+            log.warning("preload_bars_none_in_universe",
+                        n_universe=len(requested), n_bars_before_filter=len(df))
+            self._all_bars_df = pd.DataFrame()
+            self._bars_by_symbol = {}
+            return 0
+
+        # Parse timestamps once, add helper _date column for cheap filtering.
+        df["ts"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(ET)
+        df["_date"] = df["ts"].dt.date
+
+        # Build symbol -> [Bar] dict (matches aggregator's shape).
         by_sym: dict[str, list[Bar]] = {}
-        df_rows: list[dict[str, object]] = []
-        for sym, ts, o, h, l, c, v, vw, tc in rows:
-            if sym not in requested:
-                continue
-            ts_dt = ts if isinstance(ts, datetime) else datetime.combine(ts, datetime.min.time(), tzinfo=ET)
+        for row in df.itertuples(index=False):
+            ts_dt = row.ts.to_pydatetime()
             b = Bar(
-                symbol=sym, ts=ts_dt,
-                open=float(o), high=float(h), low=float(l), close=float(c),
-                volume=int(v or 0),
-                vwap=float(vw) if vw is not None else None,
-                trade_count=int(tc) if tc is not None else None,
+                symbol=str(row.symbol), ts=ts_dt,
+                open=float(row.open), high=float(row.high), low=float(row.low), close=float(row.close),
+                volume=int(row.volume) if pd.notna(row.volume) else 0,
+                vwap=float(row.vwap) if pd.notna(row.vwap) and float(row.vwap) > 0 else None,
+                trade_count=int(row.trade_count) if pd.notna(row.trade_count) else None,
             )
-            by_sym.setdefault(sym, []).append(b)
-            df_rows.append({
-                "symbol": sym, "ts": ts_dt,
-                "open": b.open, "high": b.high, "low": b.low, "close": b.close,
-                "volume": b.volume, "vwap": b.vwap, "trade_count": b.trade_count,
-                "_date": ts_dt.date(),
-            })
-            # Also seed the (sym, date) fill-lookup cache.
-            self._bar_cache[(sym, ts_dt.date())] = b
+            by_sym.setdefault(str(row.symbol), []).append(b)
+            self._bar_cache[(str(row.symbol), ts_dt.date())] = b
 
         self._bars_by_symbol = by_sym
-        self._all_bars_df = pd.DataFrame(df_rows)
-        n = len(df_rows)
+        self._all_bars_df = df
+        n = len(df)
         log.info(
             "preload_bars_complete",
             n_rows=n, n_symbols=len(by_sym),
@@ -146,6 +160,20 @@ class HistoricalSnapshotLoader:
             latest=str(latest.date()),
         )
         return n
+
+    # ---- REST transport ----
+    def _rest_query_df(self, sql: str, timeout: float = 120.0) -> pd.DataFrame:
+        """Hit QuestDB's REST /exp (CSV export) endpoint and return a
+        DataFrame. Bypasses psycopg + PG wire entirely.
+        `_db._cfg.host` is the container-network hostname (e.g. `questdb`);
+        REST port is always 9000 (container-internal, per docker-compose).
+        """
+        cfg = self._db._cfg  # noqa: SLF001 — deliberate; DB client hides transport
+        url = f"http://{cfg.host}:9000/exp?" + urllib.parse.urlencode({"query": sql})
+        req = urllib.request.Request(url, headers={"User-Agent": "juniauto-backtest/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = resp.read().decode("utf-8")
+        return pd.read_csv(StringIO(payload))
 
     # ---- Public API (aggregator-shaped) ----
     def snapshot(self, symbols: list[str], now: datetime) -> MarketSnapshot:

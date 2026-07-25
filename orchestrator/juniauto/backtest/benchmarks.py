@@ -6,6 +6,9 @@ distinct `curve_type` label so Grafana can overlay them. All benchmarks
 start from the same `initial_cash` as the main curve for apples-to-
 apples percentage comparison.
 
+Transport: reads use QuestDB's REST /exp endpoint (same as loader) to
+bypass the flaky PG wire; writes still use ILP which is reliable.
+
 Ranked (per coordinator design review):
     1. SPY buy-and-hold          -> curve_type='benchmark_spy'
     2. Equal-weight universe     -> curve_type='benchmark_ew'
@@ -15,13 +18,26 @@ Ranked (per coordinator design review):
 """
 from __future__ import annotations
 
+import urllib.parse
+import urllib.request
 from datetime import date, datetime, timedelta
+from io import StringIO
 
 import pandas as pd
 
 from juniauto.db import QuestDBClient
 from juniauto.utils import get_logger
 from juniauto.utils.time_utils import ET
+
+
+def _rest_query_df(db: QuestDBClient, sql: str, timeout: float = 120.0) -> pd.DataFrame:
+    """Same helper as loader._rest_query_df — CSV over REST /exp."""
+    cfg = db._cfg  # noqa: SLF001
+    url = f"http://{cfg.host}:9000/exp?" + urllib.parse.urlencode({"query": sql})
+    req = urllib.request.Request(url, headers={"User-Agent": "juniauto-backtest/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = resp.read().decode("utf-8")
+    return pd.read_csv(StringIO(payload))
 
 log = get_logger(__name__)
 
@@ -214,29 +230,26 @@ def benchmark_fixed5(
 def _load_daily_closes(
     db: QuestDBClient, symbol: str, start_date: date, end_date: date
 ) -> pd.Series:
-    # Two-stage query: outer date filter is done via `ts::date` which is
-    # cheap for QuestDB's partitioned tables, but the `symbol = %s` filter
-    # combined with `ts::date` casting has been unreliable on the PG wire
-    # under sustained load. We instead load ALL bars for the window and
-    # filter to `symbol` in Python — same pattern used by the engine's
-    # preload. Since we only call this once per benchmark run it's cheap.
-    rows = db.query(
-        """
-        SELECT ts::date AS d, symbol, close
-          FROM bars
-         WHERE ts::date >= %s::date
-           AND ts::date <= %s::date
-         ORDER BY ts ASC
-        """,
-        (start_date, end_date),
+    # REST /exp — bypasses the flaky PG wire. Load ALL bars for the
+    # window, then filter to `symbol` in Python.
+    sql = (
+        "SELECT ts, symbol, close FROM bars "
+        f"WHERE ts::date >= '{start_date.isoformat()}'::date "
+        f"AND ts::date <= '{end_date.isoformat()}'::date "
+        "ORDER BY ts ASC"
     )
-    if not rows:
+    try:
+        df = _rest_query_df(db, sql)
+    except Exception as e:  # noqa: BLE001
+        log.error("bench_load_daily_closes_failed", symbol=symbol, error=str(e))
         return pd.Series(dtype=float)
-    idx = [d for d, sym, _ in rows if sym == symbol]
-    values = [float(c) for _, sym, c in rows if sym == symbol]
-    if not values:
+    if df.empty:
         return pd.Series(dtype=float)
-    return pd.Series(values, index=pd.DatetimeIndex(idx), name=symbol)
+    sub = df[df["symbol"] == symbol]
+    if sub.empty:
+        return pd.Series(dtype=float)
+    idx = pd.to_datetime(sub["ts"], utc=True).dt.tz_convert(ET).dt.floor("D")
+    return pd.Series(sub["close"].astype(float).values, index=idx, name=symbol)
 
 
 def _load_close_panel(
@@ -244,26 +257,25 @@ def _load_close_panel(
 ) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame()
-    # NO `symbol IN (...)` — see loader._load_bars for the rationale.
-    # Filter by requested universe in Python after loading.
-    rows = db.query(
-        """
-        SELECT ts::date AS d, symbol, close
-          FROM bars
-         WHERE ts::date >= %s::date
-           AND ts::date <= %s::date
-         ORDER BY d ASC
-        """,
-        (start_date, end_date),
+    # REST /exp — bypasses the flaky PG wire.
+    sql = (
+        "SELECT ts, symbol, close FROM bars "
+        f"WHERE ts::date >= '{start_date.isoformat()}'::date "
+        f"AND ts::date <= '{end_date.isoformat()}'::date "
+        "ORDER BY ts ASC"
     )
-    if not rows:
+    try:
+        df = _rest_query_df(db, sql)
+    except Exception as e:  # noqa: BLE001
+        log.error("bench_load_close_panel_failed", error=str(e))
         return pd.DataFrame()
-    df = pd.DataFrame(rows, columns=["d", "symbol", "close"])
+    if df.empty:
+        return pd.DataFrame()
     requested = set(symbols)
     df = df[df["symbol"].isin(requested)]
     if df.empty:
         return pd.DataFrame()
-    df["d"] = pd.to_datetime(df["d"])
+    df["d"] = pd.to_datetime(df["ts"], utc=True).dt.tz_convert(ET).dt.floor("D")
     return df.pivot_table(index="d", columns="symbol", values="close", aggfunc="last")
 
 
