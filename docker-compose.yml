@@ -66,6 +66,17 @@ services:
       - ./config:/app/config:ro
       - ./logs:/app/logs
       - ./data/cache:/app/cache
+    # Docker's default nofile soft limit is 1024, which is too low for a long-
+    # running process that maintains ILP writer contexts, psycopg pooled
+    # connections, prometheus_client sockets, APScheduler timers, and yfinance
+    # HTTP sessions. Backfills of ~500k rows or backtests that spawn many
+    # short-lived psycopg queries will hit it and fail with `Too many open
+    # files` on completely unrelated code paths (even opening config files
+    # errors). 65k covers all realistic workloads.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     restart: unless-stopped
     networks: [quant-net]
 
