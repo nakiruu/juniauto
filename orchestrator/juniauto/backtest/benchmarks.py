@@ -236,13 +236,13 @@ def _load_close_panel(
 ) -> pd.DataFrame:
     if not symbols:
         return pd.DataFrame()
-    quoted = ",".join(f"'{s}'" for s in symbols)
+    # NO `symbol IN (...)` — see loader._load_bars for the rationale.
+    # Filter by requested universe in Python after loading.
     rows = db.query(
-        f"""
+        """
         SELECT ts::date AS d, symbol, close
           FROM bars
-         WHERE symbol IN ({quoted})
-           AND ts::date >= %s::date
+         WHERE ts::date >= %s::date
            AND ts::date <= %s::date
          ORDER BY d ASC
         """,
@@ -251,6 +251,10 @@ def _load_close_panel(
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows, columns=["d", "symbol", "close"])
+    requested = set(symbols)
+    df = df[df["symbol"].isin(requested)]
+    if df.empty:
+        return pd.DataFrame()
     df["d"] = pd.to_datetime(df["d"])
     return df.pivot_table(index="d", columns="symbol", values="close", aggfunc="last")
 

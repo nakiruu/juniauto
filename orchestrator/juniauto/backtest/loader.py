@@ -120,22 +120,28 @@ class HistoricalSnapshotLoader:
     ) -> dict[str, list[Bar]]:
         if not symbols:
             return {}
-        # QuestDB doesn't accept Python tuples for IN clauses via psycopg
-        # placeholders reliably across versions — inline a quoted list.
-        # symbols are validated upstream (from config.universe.symbols),
-        # so escaping is limited to backslash / quote safety.
-        quoted = ",".join(_quote_sym(s) for s in symbols)
-        sql = f"""
+        # NO `symbol IN (...)` clause. With ~300 symbols the interpolated
+        # IN list produces a 5-6KB SQL statement that QuestDB's PG wire
+        # sometimes returns a malformed error response for, which psycopg
+        # then reports as "server closed the connection unexpectedly" for
+        # every cycle. The bars table only contains symbols the live
+        # pipeline / backfill wrote — themselves derived from
+        # config.universe.symbols — so filtering by time window is
+        # sufficient and correct; we apply an in-memory set filter after
+        # for defensive isolation.
+        sql = """
             SELECT symbol, ts, open, high, low, close, volume, vwap, COALESCE(trade_count, 0)
               FROM bars
-             WHERE symbol IN ({quoted})
-               AND ts >= %s
+             WHERE ts >= %s
                AND ts < %s
              ORDER BY symbol ASC, ts ASC
         """
         rows = self._db.query(sql, (window_start, now))
+        requested = set(symbols)
         out: dict[str, list[Bar]] = {s: [] for s in symbols}
         for sym, ts, o, h, l, c, v, vw, tc in rows:
+            if sym not in requested:
+                continue
             ts_dt = ts if isinstance(ts, datetime) else datetime.combine(ts, datetime.min.time(), tzinfo=ET)
             out.setdefault(sym, []).append(Bar(
                 symbol=sym,
