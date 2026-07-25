@@ -202,8 +202,15 @@ ALTER TABLE gateway_actions ADD COLUMN delta_weight DOUBLE;
 -- ============================================================
 -- Order / execution telemetry (§3.2 step 7)
 -- ============================================================
+-- order_id is STRING (not SYMBOL). SYMBOL columns are dictionary-encoded and
+-- capped in cardinality; every fill produces a unique order_id, so a large
+-- backfill or a few years of live trading would exceed any reasonable cap
+-- and cause ILP "Connection reset by peer" errors on flush. STRING has no
+-- such cap and is written as a normal column via ILP `columns={}` (not
+-- `symbols={}`) — see execution/order_manager.py, bayesian/backfill.py, and
+-- backtest/engine.py._persist_fills.
 CREATE TABLE IF NOT EXISTS executions (
-    order_id             SYMBOL CAPACITY 65536 CACHE,
+    order_id             STRING,
     symbol               SYMBOL CAPACITY 8192 CACHE,
     ts                   TIMESTAMP,
     action_type          SYMBOL CAPACITY 8 CACHE,

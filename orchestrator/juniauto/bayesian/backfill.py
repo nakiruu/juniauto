@@ -21,19 +21,25 @@ Approximations documented in the code:
       proxies only. Spread_bps will be zero/None, which the signal families
       already tolerate.
 
-Usage (from the host):
-    docker exec juniauto-engine python -m juniauto.bayesian.backfill --days 60
-    # then retrain picks up the new rows on the next hourly loop, or force it:
-    docker exec juniauto-engine python -c "\
-from juniauto.config import load_config; from juniauto.db import QuestDBClient; \
-from juniauto.bayesian import BayesianModel; \
-m = BayesianModel(QuestDBClient(load_config('/app/config/production.yaml').database), \
-    load_config('/app/config/production.yaml')); \
-print('trained on', m.retrain_from_db(), 'rows')"
+Also persists raw bars to the `bars` table so the backtest engine's
+snapshot loader can find historical bars for the full window (before this
+was added, backtests starting before the ~1yr live bar cache silently
+produced empty cycles).
 
-The backfill script is idempotent per (symbol, date) — re-running with the
-same window will overwrite the same executions rows (QuestDB WAL append +
-retrain reads latest per order_id).
+Usage (from the host):
+    # Full backfill: bars + features + BACKFILL executions + retrain
+    docker exec juniauto-engine python -m juniauto.bayesian.backfill --days 1600 --retrain
+
+    # Bars-only (fast) — seed the bars table for a backtest without
+    # regenerating the training set:
+    docker exec juniauto-engine python -m juniauto.bayesian.backfill --days 1600 --bars-only
+
+The backfill is idempotent per (symbol, date) — bars use QuestDB's
+DEDUP UPSERT KEYS(ts, symbol), and re-writing the same executions rows
+uses the same deterministic order_id so training reads see one row per
+(symbol, date). order_id is STRING (not SYMBOL) — a large backfill
+generates hundreds of thousands of unique IDs, which would overflow any
+SYMBOL cap. See schema.sql for the rationale.
 """
 from __future__ import annotations
 
@@ -126,6 +132,15 @@ def backfill_from_bars(
         log.error("backfill_no_bars_returned")
         return 0
 
+    # Persist bars to the `bars` table so the backtest engine's snapshot
+    # loader can find historical bars for the full window. Without this
+    # step, backtests starting before the live pipeline's rolling ~1yr
+    # bar cache would silently produce empty cycles. QuestDB WAL + DEDUP
+    # KEYS(ts, symbol) makes this idempotent — re-running just no-ops.
+    n_bars_written = _persist_bars(db, bars)
+    log.info("backfill_bars_written", n_bars=n_bars_written,
+             n_symbols=sum(1 for b in bars.values() if b))
+
     # yfinance fundamentals — one snapshot reused across all historical dates.
     # See module docstring for the leakage/approximation trade-off.
     fundamentals = yahoo.get_fundamentals(symbols)
@@ -204,12 +219,13 @@ def backfill_from_bars(
 
                 # --- Synthetic execution row (executions table) ---
                 # order_id is deterministic per (symbol, date) so re-runs overwrite
-                # cleanly rather than accumulating duplicates.
+                # cleanly rather than accumulating duplicates. order_id is STRING
+                # (schema.sql) — must go in columns={} not symbols={} or the
+                # SYMBOL cap will overflow at ~65k unique ids.
                 order_id = f"backfill_{sym}_{date_t.isoformat()}"
                 s.row(
                     "executions",
                     symbols={
-                        "order_id": order_id,
                         "symbol": str(sym),
                         "action_type": "BACKFILL",
                         "side": "buy",
@@ -217,6 +233,7 @@ def backfill_from_bars(
                         "session": "regular",
                     },
                     columns={
+                        "order_id": order_id,
                         "qty": 0.0,
                         "fill_price": close_t,
                         "decision_ref_price": close_t,
@@ -246,6 +263,56 @@ def backfill_from_bars(
     return n_written
 
 
+def _persist_bars(db: QuestDBClient, bars: dict[str, list[Bar]]) -> int:
+    """Write every bar in `bars` to the QuestDB `bars` table via ILP.
+
+    Idempotent: schema.sql declares `bars` as `WAL DEDUP UPSERT KEYS(ts, symbol)`,
+    so re-writing the same (ts, symbol) rows leaves a single row in place.
+    Session is hardcoded to 'regular' because Alpaca daily bars are always
+    regular-session by definition.
+    """
+    n_written = 0
+    with db.sender() as s:
+        for sym, series in bars.items():
+            for b in series:
+                s.row(
+                    "bars",
+                    symbols={"symbol": sym, "session": "regular"},
+                    columns={
+                        "open": float(b.open),
+                        "high": float(b.high),
+                        "low": float(b.low),
+                        "close": float(b.close),
+                        "volume": int(b.volume or 0),
+                        "vwap": float(b.vwap) if b.vwap is not None else 0.0,
+                        "trade_count": int(b.trade_count) if b.trade_count is not None else 0,
+                    },
+                    at=b.ts,
+                )
+                n_written += 1
+    return n_written
+
+
+def backfill_bars_only(
+    db: QuestDBClient,
+    alpaca: AlpacaFeed,
+    symbols: list[str],
+    n_days: int,
+) -> int:
+    """Fetch and persist raw bars only — no feature computation, no
+    training-row synthesis. Use this to seed the `bars` table quickly
+    when you don't need to regenerate the Bayesian training set.
+    """
+    if not symbols:
+        log.warning("backfill_bars_only_empty_universe")
+        return 0
+    log.info("backfill_bars_only_start", n_symbols=len(symbols), n_days=n_days)
+    bars = alpaca.get_bars(symbols, days=n_days + 60)
+    n = _persist_bars(db, bars)
+    log.info("backfill_bars_only_complete", n_bars=n)
+    return n
+
+
 def _resolve_universe_from_config(cfg: JuniAutoConfig) -> list[str]:
     if cfg.universe.symbols:
         return list(cfg.universe.symbols)
@@ -262,6 +329,11 @@ def main(argv: Iterable[str] | None = None) -> int:
                    help="comma-separated symbol override (default: config universe)")
     p.add_argument("--retrain", action="store_true",
                    help="call bayes.retrain_from_db() after backfill (default: off)")
+    p.add_argument("--bars-only", action="store_true",
+                   help="only fetch + persist bars to QuestDB — skip feature "
+                        "computation and Bayesian training-row synthesis. Fast; "
+                        "use when you just need to seed the bars table for a "
+                        "backtest.")
     args = p.parse_args(list(argv) if argv is not None else None)
 
     cfg = load_config(args.config)
@@ -280,6 +352,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         max_workers=cfg.yahoo.max_workers,
         per_symbol_timeout_seconds=cfg.yahoo.per_symbol_timeout_seconds,
     )
+
+    if args.bars_only:
+        n = backfill_bars_only(db=db, alpaca=alpaca, symbols=symbols, n_days=args.days)
+        log.info("backfill_summary", mode="bars_only", bars_written=n)
+        return 0 if n > 0 else 1
 
     n = backfill_from_bars(db=db, alpaca=alpaca, yahoo=yahoo,
                             symbols=symbols, n_days=args.days)

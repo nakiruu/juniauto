@@ -89,12 +89,15 @@ CREATE TABLE IF NOT EXISTS backtest_predictions (
     composite_edge     DOUBLE
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL;
 
--- Order fills recorded by the SimBroker per run.
+-- Order fills recorded by the SimBroker per run. order_id STRING (not
+-- SYMBOL) — same rationale as executions.order_id in schema.sql; a 2y
+-- backtest with 300 symbols generates hundreds of thousands of unique
+-- order_ids which would exhaust any SYMBOL cap.
 CREATE TABLE IF NOT EXISTS backtest_executions (
     ts                   TIMESTAMP,
     run_id               SYMBOL CAPACITY 1024 CACHE,
     curve_type           SYMBOL CAPACITY 8 CACHE,
-    order_id             SYMBOL CAPACITY 65536 CACHE,
+    order_id             STRING,
     symbol               SYMBOL CAPACITY 8192 CACHE,
     action_type          SYMBOL CAPACITY 8 CACHE,
     side                 SYMBOL CAPACITY 4 CACHE,

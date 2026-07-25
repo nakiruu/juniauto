@@ -686,12 +686,14 @@ class BacktestEngine:
                     "backtest_executions",
                     symbols={
                         "run_id": self.run_id, "curve_type": curve_type,
-                        "order_id": f.order_id, "symbol": f.symbol,
+                        # order_id is STRING; must NOT be in symbols={}
+                        "symbol": f.symbol,
                         "action_type": "BUY" if f.side == "buy" else "SELL",
                         "side": f.side, "horizon": "1d",
                         "fill_model": self.fill_model,
                     },
                     columns={
+                        "order_id": f.order_id,
                         "qty": float(f.qty),
                         "fill_price": float(f.fill_price),
                         "decision_ref_price": float(f.decision_ref_price),

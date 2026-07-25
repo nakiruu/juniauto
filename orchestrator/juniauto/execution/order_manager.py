@@ -135,7 +135,9 @@ class OrderManager:
                 s.row(
                     "executions",
                     symbols={
-                        "order_id": order_id,
+                        # order_id is STRING in schema (unbounded cardinality) —
+                        # do NOT put it here or QuestDB will try to cache it
+                        # as a SYMBOL and hit the cap.
                         "symbol": symbol,
                         "action_type": action_type,
                         "side": side,
@@ -143,6 +145,7 @@ class OrderManager:
                         "session": "regular",
                     },
                     columns={
+                        "order_id": order_id,
                         "qty": qty,
                         "fill_price": fill_price,
                         "decision_ref_price": decision_ref_price,
