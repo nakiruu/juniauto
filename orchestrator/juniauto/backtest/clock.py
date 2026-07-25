@@ -53,9 +53,16 @@ class SimClock:
             raise ValueError(f"end_date {end_date} < start_date {start_date}")
         self._decision_time = decision_time
         sched = _NYSE.schedule(start_date=start_date, end_date=end_date)
-        # sched.index is DatetimeIndex of session open timestamps (UTC).
-        # Convert to date-only ET so we anchor at decision_time cleanly.
-        self._days: list[date] = [ts.tz_convert(ET).date() for ts in sched.index]
+        # sched.index is a DatetimeIndex of session open timestamps. Newer
+        # pandas_market_calendars versions return tz-aware (UTC); older ones
+        # return tz-naive. Localize to UTC first if needed, then convert to
+        # ET to extract the trading date (same date either way — NYSE
+        # sessions never cross a UTC calendar-day boundary — but we
+        # normalize for correctness).
+        idx = sched.index
+        if idx.tz is None:
+            idx = idx.tz_localize("UTC")
+        self._days: list[date] = [ts.tz_convert(ET).date() for ts in idx]
         if not self._days:
             raise ValueError(
                 f"No trading days between {start_date} and {end_date}. "
