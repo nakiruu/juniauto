@@ -155,6 +155,20 @@ CREATE TABLE IF NOT EXISTS backtest_metrics (
     metric_unit    SYMBOL CAPACITY 16 CACHE               -- "bps" | "ratio" | "pct" | "days" | "count"
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL;
 
+-- Per-cycle derived time series (drawdown, rolling Sharpe, etc.) written
+-- by metrics.compute_and_persist_metrics. Long/tall format so adding a
+-- new series doesn't require schema changes. QuestDB has limited window-
+-- function support (no MAX/STDDEV OVER as of 8.x), so we precompute
+-- these in Python instead of hoping a complex SQL query works — Grafana
+-- panels then do simple SELECTs.
+CREATE TABLE IF NOT EXISTS backtest_series (
+    ts             TIMESTAMP,
+    run_id         SYMBOL CAPACITY 1024 CACHE,
+    curve_type     SYMBOL CAPACITY 8 CACHE,
+    series_name    SYMBOL CAPACITY 32 CACHE,   -- drawdown_pct | rolling_sharpe_63d | running_peak_equity | ...
+    value          DOUBLE
+) TIMESTAMP(ts) PARTITION BY MONTH WAL;
+
 -- Regime observations recorded during backtest (same shape as live market_regime).
 CREATE TABLE IF NOT EXISTS backtest_market_regime (
     ts                    TIMESTAMP,

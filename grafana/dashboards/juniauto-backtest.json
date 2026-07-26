@@ -93,7 +93,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH ranked AS (\n  SELECT ts, run_id, curve_type, equity,\n         MAX(equity) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak\n    FROM backtest_equity_curve\n   WHERE run_id = '${run_id}'\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       100.0 * (equity / peak - 1.0) AS value\n  FROM ranked\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "SELECT ts AS time,\n       curve_type AS metric,\n       value\n  FROM backtest_series\n WHERE run_id = '${run_id}'\n   AND series_name = 'drawdown_pct'\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 20}, "unit": "percent"}}
@@ -177,7 +177,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH ret AS (\n  SELECT ts, run_id, curve_type,\n         daily_return_bps / 10000.0 AS r\n    FROM backtest_equity_curve\n   WHERE run_id = '${run_id}'\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       (AVG(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW)\n        / NULLIF(STDDEV(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW), 0)\n        * SQRT(252)) AS value\n  FROM ret\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "SELECT ts AS time,\n       curve_type AS metric,\n       value\n  FROM backtest_series\n WHERE run_id = '${run_id}'\n   AND series_name = 'rolling_sharpe_63d'\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "decimals": 2}}

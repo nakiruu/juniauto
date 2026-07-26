@@ -96,15 +96,87 @@ def compute_and_persist_metrics(
             rows.extend(_regime_quintile_sharpe(c, regime_series))
 
         _persist_metric_rows(db, run_id=run_id, curve_type=curve_type, rows=rows, ts=now_ts)
+
+        # Precompute drawdown + rolling-Sharpe series and write to
+        # backtest_series so Grafana panels don't need window functions
+        # (QuestDB 8.x doesn't support MAX/STDDEV OVER).
+        n_series = _persist_derived_series(db, run_id=run_id, curve_type=curve_type, curve=c)
+
         all_rows[curve_type] = rows
         log.info(
             "metrics_computed",
             run_id=run_id, curve_type=curve_type,
-            n_metrics=len(rows),
+            n_metrics=len(rows), n_series_rows=n_series,
             sample={r.name: round(r.value, 4) for r in rows[:5]},
         )
 
     return all_rows
+
+
+def _persist_derived_series(
+    db: QuestDBClient, *, run_id: str, curve_type: str, curve: pd.DataFrame
+) -> int:
+    """Write drawdown_pct + rolling_sharpe_63d + running_peak_equity
+    time series to backtest_series. Called per-curve from
+    compute_and_persist_metrics. Returns rows written.
+
+    Invariant: `curve.index` is a monotonic DatetimeIndex sorted asc.
+    """
+    equity = curve["equity"].dropna()
+    if len(equity) < 2:
+        return 0
+    # Running peak + drawdown pct (mirrored — negative = below peak).
+    running_peak = equity.cummax()
+    drawdown_pct = 100.0 * (equity / running_peak - 1.0)
+    # Rolling 63d Sharpe (annualized). Use daily returns; excess over rf.
+    daily_ret = equity.pct_change()
+    excess = daily_ret - (RF_ANNUAL / TRADING_DAYS_PER_YEAR)
+    roll_mean = excess.rolling(window=63, min_periods=20).mean()
+    roll_std = excess.rolling(window=63, min_periods=20).std(ddof=1)
+    rolling_sharpe = (roll_mean / roll_std) * math.sqrt(TRADING_DAYS_PER_YEAR)
+
+    n_written = 0
+    with db.sender() as s:
+        for ts, val in running_peak.items():
+            s.row(
+                "backtest_series",
+                symbols={"run_id": run_id, "curve_type": curve_type,
+                         "series_name": "running_peak_equity"},
+                columns={"value": float(val)},
+                at=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+            )
+            n_written += 1
+        for ts, val in drawdown_pct.items():
+            if pd.isna(val):
+                continue
+            s.row(
+                "backtest_series",
+                symbols={"run_id": run_id, "curve_type": curve_type,
+                         "series_name": "drawdown_pct"},
+                columns={"value": float(val)},
+                at=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+            )
+            n_written += 1
+        for ts, val in rolling_sharpe.items():
+            if pd.isna(val):
+                continue
+            s.row(
+                "backtest_series",
+                symbols={"run_id": run_id, "curve_type": curve_type,
+                         "series_name": "rolling_sharpe_63d"},
+                columns={"value": float(val)},
+                at=ts.to_pydatetime() if hasattr(ts, "to_pydatetime") else ts,
+            )
+            n_written += 1
+    # Invariant check: expected 3 series * len(equity) minus early NaN drops
+    # for rolling window seed. If we wrote < len(equity) rows we lost the
+    # running peak series entirely — surface loudly.
+    if n_written < len(equity):
+        log.warning(
+            "derived_series_underwrote", run_id=run_id, curve_type=curve_type,
+            expected_min=len(equity), actual=n_written,
+        )
+    return n_written
 
 
 # ================================================================
