@@ -4,9 +4,19 @@ Mirrors the C++ feature layout in engine/src/data/features.cpp exactly so that
 Python-side row vectors are compatible with GroupedRidge.update() and predict_mean().
 
 References: PRINCIPLESLONG.md §2.6-§2.8, §2.42.
+
+Transport note: build_training_matrix uses QuestDB's REST /exp (CSV export)
+endpoint, NOT the PG wire. The PG wire has been unreliable when the features
+table has partition corruption (surfaces as `could not open read-only [file=
+.../features~N/YYYY-MM-DD.NNN/col.d]` errors that crash the psycopg
+connection); the REST endpoint returns cleanly. Retrain fires hourly so the
+one-shot REST hit is fine performance-wise.
 """
 from __future__ import annotations
 
+import urllib.parse
+import urllib.request
+from io import StringIO
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -110,13 +120,10 @@ _MIN_ROWS_TO_TRAIN = 30   # minimum to consider the model "trained" (is_trained 
 def build_training_matrix(
     db: "QuestDBClient",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[qe.GroupId]] | None:
-    """Pull resolved executions joined with features from QuestDB.
+    """Pull resolved executions joined with features from QuestDB via REST /exp.
 
     Queries executions WHERE realized_return_bps != 0.0 (already resolved),
     joins to features on (symbol, date), and returns the training arrays.
-
-    Args:
-        db: Active QuestDBClient instance.
 
     Returns:
         ``(X, y, weights, col_groups)`` or ``None`` when fewer than
@@ -127,6 +134,12 @@ def build_training_matrix(
         - weights: float64 ndarray of shape (n,) — freshness_weight * data_quality,
           clipped to [0, 1].
         - col_groups: list of qe.GroupId, length 26, matching column order.
+
+    Invariants (asserted or logged):
+      - Every returned batch has the 26 canonical feature columns.
+      - y is non-empty and non-degenerate (variance > 0) — otherwise no learning
+        signal exists and we return None with a loud log.
+      - n < _MIN_ROWS_TO_BUILD returns None (no partial training).
     """
     # Build the SELECT with only the 26 feature columns we need.
     feature_cols_sql = ", ".join(f"f.{c}" for c in _CANONICAL_FEATURE_COLS)
@@ -134,61 +147,76 @@ def build_training_matrix(
     # QuestDB timestamp truncation: cast ts to date for the join key.
     # executions.ts is the submission timestamp; features.ts is the cycle timestamp.
     # Both are daily, so date-level join is accurate enough.
-    sql = f"""
-        SELECT
-            e.realized_return_bps,
-            f.freshness_weight,
-            f.data_quality,
-            {feature_cols_sql}
-        FROM executions e
-        INNER JOIN features f
-            ON e.symbol = f.symbol
-            AND cast(e.ts AS DATE) = cast(f.ts AS DATE)
-        WHERE e.realized_return_bps != 0.0
-          AND e.action_type IN ('BUY', 'ROTATE', 'BACKFILL')
-        ORDER BY e.ts ASC
-    """
+    sql = (
+        "SELECT e.realized_return_bps, f.freshness_weight, f.data_quality, "
+        f"{feature_cols_sql} "
+        "FROM executions e "
+        "INNER JOIN features f "
+        "ON e.symbol = f.symbol AND cast(e.ts AS DATE) = cast(f.ts AS DATE) "
+        "WHERE e.realized_return_bps != 0.0 "
+        "AND e.action_type IN ('BUY', 'ROTATE', 'BACKFILL') "
+        "ORDER BY e.ts ASC"
+    )
+
     try:
-        rows = db.query(sql)
-    except Exception as exc:
-        log.error("build_training_matrix_query_failed", error=str(exc))
+        df = _rest_query_df(db, sql)
+    except Exception as exc:  # noqa: BLE001
+        log.error("build_training_matrix_query_failed",
+                  error=str(exc), error_type=type(exc).__name__)
         return None
 
-    if len(rows) < _MIN_ROWS_TO_BUILD:
+    if len(df) < _MIN_ROWS_TO_BUILD:
         log.info(
             "build_training_matrix_insufficient",
-            n_rows=len(rows),
+            n_rows=len(df),
             min_required=_MIN_ROWS_TO_BUILD,
         )
         return None
 
-    n = len(rows)
+    # Invariant: CSV response must have all expected columns in order.
+    expected_cols = ["realized_return_bps", "freshness_weight", "data_quality"] + list(_CANONICAL_FEATURE_COLS)
+    missing = [c for c in expected_cols if c not in df.columns]
+    if missing:
+        log.error("build_training_matrix_missing_columns", missing=missing)
+        return None
+
+    n = len(df)
     p = len(_CANONICAL_FEATURE_COLS)
 
-    y = np.empty(n, dtype=np.float64)
-    weights = np.empty(n, dtype=np.float64)
-    X = np.zeros((n, p), dtype=np.float64)
+    y = df["realized_return_bps"].fillna(0.0).astype(np.float64).to_numpy()
+    fw = df["freshness_weight"].fillna(1.0).astype(np.float64).to_numpy()
+    dq = df["data_quality"].fillna(1.0).astype(np.float64).to_numpy()
+    weights = np.clip(fw * dq, 0.0, 1.0)
+    X = df[list(_CANONICAL_FEATURE_COLS)].fillna(0.0).astype(np.float64).to_numpy()
 
-    for i, row in enumerate(rows):
-        # row layout: realized_return_bps, freshness_weight, data_quality, feat0..feat25
-        y[i] = float(row[0]) if row[0] is not None else 0.0
-        fw = float(row[1]) if row[1] is not None else 1.0
-        dq = float(row[2]) if row[2] is not None else 1.0
-        weights[i] = float(np.clip(fw * dq, 0.0, 1.0))
-        for j in range(p):
-            val = row[3 + j]
-            X[i, j] = float(val) if val is not None and not (
-                isinstance(val, float) and np.isnan(val)
-            ) else 0.0
+    # Invariant: y must have non-zero variance to admit any learning.
+    y_std = float(np.std(y))
+    if y_std < 1e-9:
+        log.error("build_training_matrix_degenerate_y",
+                  n_rows=n, y_mean=float(np.mean(y)), y_std=y_std)
+        return None
 
     log.info(
         "build_training_matrix_ok",
-        n_rows=n,
-        n_features=p,
-        y_mean=float(np.mean(y)),
-        y_std=float(np.std(y)),
+        n_rows=n, n_features=p,
+        y_mean=round(float(np.mean(y)), 3),
+        y_std=round(y_std, 3),
+        n_nonzero_weights=int((weights > 0).sum()),
     )
     return X, y, weights, _COL_GROUPS
+
+
+def _rest_query_df(db: "QuestDBClient", sql: str, timeout: float = 120.0) -> pd.DataFrame:
+    """Hit QuestDB's REST /exp (CSV export) endpoint. Bypasses psycopg + PG wire
+    which crashes on features-table partition corruption. Same pattern as
+    backtest.loader._rest_query_df.
+    """
+    cfg = db._cfg  # noqa: SLF001
+    url = f"http://{cfg.host}:9000/exp?" + urllib.parse.urlencode({"query": sql})
+    req = urllib.request.Request(url, headers={"User-Agent": "juniauto-bayesian/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        payload = resp.read().decode("utf-8")
+    return pd.read_csv(StringIO(payload))
 
 
 class BayesianModel:
