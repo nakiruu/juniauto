@@ -127,6 +127,10 @@ def _load_equity_curves(db: QuestDBClient, run_id: str) -> dict[str, pd.DataFram
     out: dict[str, pd.DataFrame] = {}
     for ct, sub in df.groupby("curve_type"):
         sub = sub.set_index("ts").sort_index()
+        # Dedup on timestamp — earlier failed runs of the same run_id leave
+        # rows behind since QuestDB WAL is append-only. Keep the LAST write
+        # per (ts, curve_type) so the most recent successful run wins.
+        sub = sub[~sub.index.duplicated(keep="last")]
         # Recompute daily returns from equity to catch cases where the writer
         # left them at 0.0 (e.g. main curve during backtest — engine writes 0).
         sub["daily_return_bps"] = 10_000.0 * sub["equity"].pct_change().fillna(0.0)
@@ -168,7 +172,11 @@ def _load_regime(db: QuestDBClient, run_id: str) -> pd.Series | None:
         index=pd.DatetimeIndex([t for t, _ in rows]),
         name="stress_ema",
     ).dropna()
-    return ser if not ser.empty else None
+    if ser.empty:
+        return None
+    # Dedup on timestamp — same rationale as _load_equity_curves.
+    ser = ser[~ser.index.duplicated(keep="last")]
+    return ser
 
 
 # ================================================================
