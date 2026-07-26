@@ -153,10 +153,6 @@ def build_training_matrix(
         "AND action_type IN ('BUY', 'ROTATE', 'BACKFILL')"
     )
     feat_cols_sql = ", ".join(_CANONICAL_FEATURE_COLS)
-    feat_sql = (
-        "SELECT symbol, ts, freshness_weight, data_quality, "
-        f"{feat_cols_sql} FROM features"
-    )
 
     try:
         exec_df = _rest_query_df(db, exec_sql)
@@ -164,11 +160,13 @@ def build_training_matrix(
         log.error("build_training_matrix_executions_failed",
                   error=str(exc), error_type=type(exc).__name__)
         return None
-    try:
-        feat_df = _rest_query_df(db, feat_sql)
-    except Exception as exc:  # noqa: BLE001
-        log.error("build_training_matrix_features_failed",
-                  error=str(exc), error_type=type(exc).__name__)
+
+    # Features must be batched. A single SELECT returns ~100MB+ CSV for
+    # 445k rows × 29 columns which QuestDB REST truncates with
+    # IncompleteRead. Fetch year-by-year — each year is ~50-80k rows and
+    # ~15-25MB, well under any response size limit.
+    feat_df = _fetch_features_batched(db, feat_cols_sql)
+    if feat_df is None:
         return None
 
     log.info(
@@ -247,6 +245,77 @@ def _rest_query_df(db: "QuestDBClient", sql: str, timeout: float = 120.0) -> pd.
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = resp.read().decode("utf-8")
     return pd.read_csv(StringIO(payload))
+
+
+def _fetch_features_batched(
+    db: "QuestDBClient", feat_cols_sql: str
+) -> pd.DataFrame | None:
+    """Fetch the features table in year-sized batches via REST /exp.
+
+    A single SELECT for 445k rows × 29 columns produces a ~100MB+ CSV
+    response that QuestDB REST truncates mid-stream with IncompleteRead.
+    Year batches are ~50-80k rows / ~15-25MB each, well within limits.
+
+    Invariants:
+      - Each per-year fetch is logged with n_rows + earliest/latest date
+        so a bad year is visible.
+      - If ALL years fail, returns None. If SOME years fail, returns the
+        successful union with a WARNING log naming the failed years.
+    """
+    # Get the year range in one tiny query. If this fails, features is
+    # unreachable and there's no point continuing.
+    try:
+        yr_df = _rest_query_df(
+            db,
+            "SELECT min(ts) AS mn, max(ts) AS mx FROM features",
+            timeout=30.0,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("build_training_matrix_features_range_failed",
+                  error=str(exc), error_type=type(exc).__name__)
+        return None
+    if yr_df.empty or pd.isna(yr_df["mn"].iloc[0]):
+        log.warning("build_training_matrix_features_empty")
+        return None
+    mn = pd.to_datetime(yr_df["mn"].iloc[0], utc=True)
+    mx = pd.to_datetime(yr_df["mx"].iloc[0], utc=True)
+    years = list(range(mn.year, mx.year + 1))
+
+    parts: list[pd.DataFrame] = []
+    failed_years: list[int] = []
+    for yr in years:
+        sql = (
+            "SELECT symbol, ts, freshness_weight, data_quality, "
+            f"{feat_cols_sql} FROM features "
+            f"WHERE ts >= '{yr}-01-01' AND ts < '{yr + 1}-01-01'"
+        )
+        try:
+            part = _rest_query_df(db, sql, timeout=120.0)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "build_training_matrix_features_batch_failed",
+                year=yr, error=str(exc), error_type=type(exc).__name__,
+            )
+            failed_years.append(yr)
+            continue
+        if not part.empty:
+            log.info(
+                "build_training_matrix_features_batch",
+                year=yr, n_rows=len(part),
+            )
+            parts.append(part)
+
+    if not parts:
+        log.error("build_training_matrix_features_all_batches_failed",
+                  failed_years=failed_years)
+        return None
+    if failed_years:
+        log.warning(
+            "build_training_matrix_features_partial",
+            failed_years=failed_years,
+            n_successful_batches=len(parts),
+        )
+    return pd.concat(parts, ignore_index=True)
 
 
 class BayesianModel:
