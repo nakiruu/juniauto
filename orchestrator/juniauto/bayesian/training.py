@@ -141,39 +141,69 @@ def build_training_matrix(
         signal exists and we return None with a loud log.
       - n < _MIN_ROWS_TO_BUILD returns None (no partial training).
     """
-    # Build the SELECT with only the 26 feature columns we need.
-    feature_cols_sql = ", ".join(f"f.{c}" for c in _CANONICAL_FEATURE_COLS)
-
-    # QuestDB timestamp truncation: cast ts to date for the join key.
-    # executions.ts is the submission timestamp; features.ts is the cycle timestamp.
-    # Both are daily, so date-level join is accurate enough.
-    sql = (
-        "SELECT e.realized_return_bps, f.freshness_weight, f.data_quality, "
-        f"{feature_cols_sql} "
-        "FROM executions e "
-        "INNER JOIN features f "
-        "ON e.symbol = f.symbol AND cast(e.ts AS DATE) = cast(f.ts AS DATE) "
-        "WHERE e.realized_return_bps != 0.0 "
-        "AND e.action_type IN ('BUY', 'ROTATE', 'BACKFILL') "
-        "ORDER BY e.ts ASC"
+    # Two-query strategy: QuestDB REST /exp rejects the multi-column JOIN
+    # (cast(ts AS DATE) in the ON clause) with HTTP 400. Fetch executions
+    # and features separately, then merge in pandas on (symbol, date).
+    # Bonus: separates the two failure modes so a broken features table
+    # doesn't silently kill executions ingestion diagnostics.
+    exec_sql = (
+        "SELECT symbol, ts, realized_return_bps "
+        "FROM executions "
+        "WHERE realized_return_bps != 0.0 "
+        "AND action_type IN ('BUY', 'ROTATE', 'BACKFILL')"
+    )
+    feat_cols_sql = ", ".join(_CANONICAL_FEATURE_COLS)
+    feat_sql = (
+        "SELECT symbol, ts, freshness_weight, data_quality, "
+        f"{feat_cols_sql} FROM features"
     )
 
     try:
-        df = _rest_query_df(db, sql)
+        exec_df = _rest_query_df(db, exec_sql)
     except Exception as exc:  # noqa: BLE001
-        log.error("build_training_matrix_query_failed",
+        log.error("build_training_matrix_executions_failed",
                   error=str(exc), error_type=type(exc).__name__)
         return None
+    try:
+        feat_df = _rest_query_df(db, feat_sql)
+    except Exception as exc:  # noqa: BLE001
+        log.error("build_training_matrix_features_failed",
+                  error=str(exc), error_type=type(exc).__name__)
+        return None
+
+    log.info(
+        "build_training_matrix_fetched",
+        n_executions=len(exec_df), n_features=len(feat_df),
+    )
+
+    if exec_df.empty or feat_df.empty:
+        log.info("build_training_matrix_empty_table",
+                 n_executions=len(exec_df), n_features=len(feat_df))
+        return None
+
+    # Add join-key column (date only) to each side.
+    exec_df["_date"] = pd.to_datetime(exec_df["ts"], utc=True).dt.date
+    feat_df["_date"] = pd.to_datetime(feat_df["ts"], utc=True).dt.date
+
+    # Inner merge on (symbol, _date). Drop duplicate ts columns.
+    df = exec_df.merge(
+        feat_df.drop(columns=["ts"]),
+        on=["symbol", "_date"],
+        how="inner",
+        suffixes=("", "_feat"),
+    )
 
     if len(df) < _MIN_ROWS_TO_BUILD:
         log.info(
             "build_training_matrix_insufficient",
             n_rows=len(df),
+            n_executions=len(exec_df),
+            n_features_rows=len(feat_df),
             min_required=_MIN_ROWS_TO_BUILD,
         )
         return None
 
-    # Invariant: CSV response must have all expected columns in order.
+    # Invariant: merged frame must have all expected columns.
     expected_cols = ["realized_return_bps", "freshness_weight", "data_quality"] + list(_CANONICAL_FEATURE_COLS)
     missing = [c for c in expected_cols if c not in df.columns]
     if missing:
