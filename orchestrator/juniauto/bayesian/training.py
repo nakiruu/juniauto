@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from io import StringIO
 from typing import TYPE_CHECKING
 
@@ -262,24 +263,13 @@ def _fetch_features_batched(
       - If ALL years fail, returns None. If SOME years fail, returns the
         successful union with a WARNING log naming the failed years.
     """
-    # Get the year range in one tiny query. If this fails, features is
-    # unreachable and there's no point continuing.
-    try:
-        yr_df = _rest_query_df(
-            db,
-            "SELECT min(ts) AS mn, max(ts) AS mx FROM features",
-            timeout=30.0,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.error("build_training_matrix_features_range_failed",
-                  error=str(exc), error_type=type(exc).__name__)
-        return None
-    if yr_df.empty or pd.isna(yr_df["mn"].iloc[0]):
-        log.warning("build_training_matrix_features_empty")
-        return None
-    mn = pd.to_datetime(yr_df["mn"].iloc[0], utc=True)
-    mx = pd.to_datetime(yr_df["mx"].iloc[0], utc=True)
-    years = list(range(mn.year, mx.year + 1))
+    # Fixed year range from the earliest plausible backfill start (2020)
+    # through next year. Skips the range-detection query — QuestDB REST
+    # rejected `SELECT min(ts) AS mn, max(ts) AS mx FROM features` with
+    # HTTP 400 (likely an alias-parsing issue), and empty years are
+    # already handled per-batch (empty DataFrame is skipped silently).
+    current_year = datetime.now(tz=timezone.utc).year
+    years = list(range(2020, current_year + 2))
 
     parts: list[pd.DataFrame] = []
     failed_years: list[int] = []
