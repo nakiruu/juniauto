@@ -50,7 +50,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       equity AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       equity AS value\n  FROM backtest_equity_curve\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND ',${curve:csv},' LIKE ('%,' || curve_type || ',%')\n   AND $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "currencyUSD"}}
@@ -66,7 +66,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       cum_return_bps AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n   AND $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       cum_return_bps AS value\n  FROM backtest_equity_curve\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND ',${curve:csv},' LIKE ('%,' || curve_type || ',%')\n   AND $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short"}}
@@ -82,7 +82,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH ranked AS (\n  SELECT ts, run_id, curve_type, equity,\n         MAX(equity) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak\n    FROM backtest_equity_curve\n   WHERE run_id IN (${run_id:sqlstring})\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       100.0 * (equity / peak - 1.0) AS value\n  FROM ranked\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "WITH ranked AS (\n  SELECT ts, run_id, curve_type, equity,\n         MAX(equity) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS peak\n    FROM backtest_equity_curve\n   WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n     AND ',${curve:csv},' LIKE ('%,' || curve_type || ',%')\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       100.0 * (equity / peak - 1.0) AS value\n  FROM ranked\n WHERE $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 20}, "unit": "percent"}}
@@ -105,7 +105,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT run_id, curve_type, metric_name, ROUND(metric_value, 4) AS value, metric_unit\n  FROM backtest_metrics\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN (${curve:sqlstring})\n ORDER BY run_id, curve_type, metric_name"
+          "rawSql": "SELECT run_id, curve_type, metric_name, ROUND(metric_value, 4) AS value, metric_unit\n  FROM backtest_metrics\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND ',${curve:csv},' LIKE ('%,' || curve_type || ',%')\n ORDER BY run_id, curve_type, metric_name"
         }
       ],
       "options": {"showHeader": true},
@@ -118,7 +118,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 32},
       "targets": [
-        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'sharpe_annualized' ORDER BY ts DESC LIMIT 1"}
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND metric_name = 'sharpe_annualized' ORDER BY ts DESC LIMIT 1"}
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "orange", "value": 0.5}, {"color": "green", "value": 1.0}]}}}
     },
@@ -129,7 +129,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 32},
       "targets": [
-        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'capm_alpha_annualized_bps' ORDER BY ts DESC LIMIT 1"}
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND metric_name = 'capm_alpha_annualized_bps' ORDER BY ts DESC LIMIT 1"}
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "orange", "value": 0}, {"color": "green", "value": 100}]}}}
     },
@@ -140,7 +140,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 32},
       "targets": [
-        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'max_drawdown_pct' ORDER BY ts DESC LIMIT 1"}
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND metric_name = 'max_drawdown_pct' ORDER BY ts DESC LIMIT 1"}
       ],
       "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": -10}, {"color": "red", "value": -20}]}}}
     },
@@ -151,7 +151,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 4, "w": 6, "x": 18, "y": 32},
       "targets": [
-        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND metric_name = 'cagr_pct' ORDER BY ts DESC LIMIT 1"}
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT metric_value FROM backtest_metrics WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND metric_name = 'cagr_pct' ORDER BY ts DESC LIMIT 1"}
       ],
       "fieldConfig": {"defaults": {"unit": "percent", "decimals": 2}}
     },
@@ -166,7 +166,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "WITH ret AS (\n  SELECT ts, run_id, curve_type,\n         daily_return_bps / 10000.0 AS r\n    FROM backtest_equity_curve\n   WHERE run_id IN (${run_id:sqlstring})\n     AND curve_type IN (${curve:sqlstring})\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       (AVG(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW)\n        / NULLIF(STDDEV(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW), 0)\n        * SQRT(252)) AS value\n  FROM ret\n WHERE $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "WITH ret AS (\n  SELECT ts, run_id, curve_type,\n         daily_return_bps / 10000.0 AS r\n    FROM backtest_equity_curve\n   WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n     AND ',${curve:csv},' LIKE ('%,' || curve_type || ',%')\n)\nSELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       (AVG(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW)\n        / NULLIF(STDDEV(r) OVER (PARTITION BY run_id, curve_type ORDER BY ts ROWS BETWEEN 62 PRECEDING AND CURRENT ROW), 0)\n        * SQRT(252)) AS value\n  FROM ret\n WHERE $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "decimals": 2}}
@@ -188,7 +188,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS time,\n       'entry' AS metric,\n       AVG(entry_cost_bps) AS value\n  FROM backtest_gateway_actions\n WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE\n   AND $__timeFilter(ts)\n GROUP BY ts\nUNION ALL\nSELECT ts, 'queue', AVG(queue_delay_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'action_memory', AVG(action_memory_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'operational', AVG(operational_bps) FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nORDER BY time"
+          "rawSql": "SELECT ts AS time,\n       'entry' AS metric,\n       AVG(entry_cost_bps) AS value\n  FROM backtest_gateway_actions\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE\n   AND $__timeFilter(ts)\n GROUP BY ts\nUNION ALL\nSELECT ts, 'queue', AVG(queue_delay_bps) FROM backtest_gateway_actions WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'action_memory', AVG(action_memory_bps) FROM backtest_gateway_actions WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nUNION ALL\nSELECT ts, 'operational', AVG(operational_bps) FROM backtest_gateway_actions WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts\nORDER BY time"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "stacking": {"mode": "normal"}}, "unit": "short"}}
@@ -200,8 +200,8 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 45},
       "targets": [
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'gross_edge_bps' AS metric, AVG(gross_edge_bps) AS value FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"},
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'net_edge_bps' AS metric, AVG(net_edge_bps) AS value FROM backtest_gateway_actions WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"}
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'gross_edge_bps' AS metric, AVG(gross_edge_bps) AS value FROM backtest_gateway_actions WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"},
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'net_edge_bps' AS metric, AVG(net_edge_bps) AS value FROM backtest_gateway_actions WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND executed = TRUE AND $__timeFilter(ts) GROUP BY ts ORDER BY ts"}
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short"}}
     },
@@ -222,7 +222,7 @@
         {
           "format": "time_series",
           "rawQuery": true,
-          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       position_count AS value\n  FROM backtest_equity_curve\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type IN ('main', 'unconstrained')\n   AND $__timeFilter(ts)\n ORDER BY ts"
+          "rawSql": "SELECT ts AS time,\n       run_id || '/' || curve_type AS metric,\n       position_count AS value\n  FROM backtest_equity_curve\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND curve_type IN ('main', 'unconstrained')\n   AND $__timeFilter(ts)\n ORDER BY ts"
         }
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "max": 30}}
@@ -235,7 +235,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
       "targets": [
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'pdt_count' AS metric, pdt_day_trade_count AS value FROM backtest_equity_curve WHERE run_id IN (${run_id:sqlstring}) AND curve_type = 'main' AND $__timeFilter(ts) ORDER BY ts"}
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, 'pdt_count' AS metric, pdt_day_trade_count AS value FROM backtest_equity_curve WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND curve_type = 'main' AND $__timeFilter(ts) ORDER BY ts"}
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 3}, "unit": "short", "max": 5, "thresholds": {"mode": "absolute", "steps": [{"color": "green"}, {"color": "orange", "value": 2}, {"color": "red", "value": 3}]}}}
     },
@@ -249,7 +249,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT symbol,\n       SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END) AS realized_pnl_usd,\n       SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) AS n_buys,\n       SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) AS n_sells,\n       AVG(slippage_bps) AS avg_slippage_bps\n  FROM backtest_executions\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type = 'main'\n GROUP BY symbol\n ORDER BY ABS(SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END)) DESC\n LIMIT 20"
+          "rawSql": "SELECT symbol,\n       SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END) AS realized_pnl_usd,\n       SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) AS n_buys,\n       SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) AS n_sells,\n       AVG(slippage_bps) AS avg_slippage_bps\n  FROM backtest_executions\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND curve_type = 'main'\n GROUP BY symbol\n ORDER BY ABS(SUM(CASE WHEN side = 'buy' THEN -qty * fill_price ELSE qty * fill_price END)) DESC\n LIMIT 20"
         }
       ],
       "options": {"showHeader": true}
@@ -268,7 +268,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 73},
       "targets": [
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, stress_ema AS value FROM backtest_market_regime WHERE run_id IN (${run_id:sqlstring}) AND stress_ema IS NOT NULL AND $__timeFilter(ts) ORDER BY ts"}
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, stress_ema AS value FROM backtest_market_regime WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND stress_ema IS NOT NULL AND $__timeFilter(ts) ORDER BY ts"}
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}, "min": 0, "max": 1, "unit": "short", "decimals": 3}}
     },
@@ -283,7 +283,7 @@
         {
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT metric_name AS bucket, metric_value AS sharpe\n  FROM backtest_metrics\n WHERE run_id IN (${run_id:sqlstring})\n   AND curve_type = 'main'\n   AND metric_name LIKE 'sharpe_by_regime_%'\n ORDER BY metric_name"
+          "rawSql": "SELECT metric_name AS bucket, metric_value AS sharpe\n  FROM backtest_metrics\n WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%')\n   AND curve_type = 'main'\n   AND metric_name LIKE 'sharpe_by_regime_%'\n ORDER BY metric_name"
         }
       ],
       "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}}
@@ -302,7 +302,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 6, "w": 24, "x": 0, "y": 82},
       "targets": [
-        {"format": "table", "rawQuery": true, "rawSql": "SELECT run_id, started_at, ended_at, start_date, end_date, fill_model, walkforward_days, universe_size, n_cycles, notes, cli_args FROM backtest_metadata WHERE run_id IN (${run_id:sqlstring}) ORDER BY started_at DESC"}
+        {"format": "table", "rawQuery": true, "rawSql": "SELECT run_id, started_at, ended_at, start_date, end_date, fill_model, walkforward_days, universe_size, n_cycles, notes, cli_args FROM backtest_metadata WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') ORDER BY started_at DESC"}
       ],
       "options": {"showHeader": true}
     },
@@ -313,7 +313,7 @@
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 88},
       "targets": [
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, n_samples AS value FROM backtest_bayes_snapshots WHERE run_id IN (${run_id:sqlstring}) AND $__timeFilter(ts) ORDER BY ts"}
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, n_samples AS value FROM backtest_bayes_snapshots WHERE ',${run_id:csv},' LIKE ('%,' || run_id || ',%') AND $__timeFilter(ts) ORDER BY ts"}
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "points", "pointSize": 8, "fillOpacity": 0}, "unit": "short"}}
     }
