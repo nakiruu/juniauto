@@ -98,13 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     db_client = QuestDBClient(cfg.database)
-    for name in ("schema.sql", "schema_backtest.sql"):
-        schema_path = Path(__file__).parent.parent.parent / "orchestrator" / "juniauto" / "db" / name
-        try:
-            db_client.apply_schema(schema_path)
-        except Exception as e:  # noqa: BLE001
-            log.error("mh_cli_schema_apply_failed", path=str(schema_path), error=str(e))
-            return 2
+    # Schema is applied on container boot by main.py; no need to re-apply
+    # from the experiment CLI. If the engine container isn't running,
+    # start it first with `docker compose up -d engine`.
 
     universe = (
         [s.strip() for s in args.universe.split(",") if s.strip()]
