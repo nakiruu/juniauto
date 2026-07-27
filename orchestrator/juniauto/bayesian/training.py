@@ -142,30 +142,17 @@ def build_training_matrix(
         signal exists and we return None with a loud log.
       - n < _MIN_ROWS_TO_BUILD returns None (no partial training).
     """
-    # Two-query strategy: QuestDB REST /exp rejects the multi-column JOIN
-    # (cast(ts AS DATE) in the ON clause) with HTTP 400. Fetch executions
-    # and features separately, then merge in pandas on (symbol, date).
-    # Bonus: separates the two failure modes so a broken features table
-    # doesn't silently kill executions ingestion diagnostics.
-    exec_sql = (
-        "SELECT symbol, ts, realized_return_bps "
-        "FROM executions "
-        "WHERE realized_return_bps != 0.0 "
-        "AND action_type IN ('BUY', 'ROTATE', 'BACKFILL')"
-    )
+    # Two-batched-query strategy. Both tables suffer from occasional
+    # partition-file corruption (`could not open read-only [file=.../
+    # executions~N/YYYY-MM-DD.NNN/col.d]`) that kills the whole SELECT.
+    # Year batching skips corrupted years with a WARN and continues on
+    # the good ones — partial training set beats total training failure.
     feat_cols_sql = ", ".join(_CANONICAL_FEATURE_COLS)
 
-    try:
-        exec_df = _rest_query_df(db, exec_sql)
-    except Exception as exc:  # noqa: BLE001
-        log.error("build_training_matrix_executions_failed",
-                  error=str(exc), error_type=type(exc).__name__)
+    exec_df = _fetch_executions_batched(db)
+    if exec_df is None:
         return None
 
-    # Features must be batched. A single SELECT returns ~100MB+ CSV for
-    # 445k rows × 29 columns which QuestDB REST truncates with
-    # IncompleteRead. Fetch year-by-year — each year is ~50-80k rows and
-    # ~15-25MB, well under any response size limit.
     feat_df = _fetch_features_batched(db, feat_cols_sql)
     if feat_df is None:
         return None
@@ -246,6 +233,60 @@ def _rest_query_df(db: "QuestDBClient", sql: str, timeout: float = 120.0) -> pd.
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = resp.read().decode("utf-8")
     return pd.read_csv(StringIO(payload))
+
+
+def _fetch_executions_batched(db: "QuestDBClient") -> pd.DataFrame | None:
+    """Fetch resolved executions in year-sized batches via REST /exp.
+
+    Same batching pattern as _fetch_features_batched — executions has
+    partition-corruption issues too (`could not open read-only [file=
+    .../executions~N/YYYY-MM-DD.NNN/col.d]`) that kill unbatched queries.
+    Year batches let us skip corrupted years and continue on the good
+    ones. Partial training set beats total training failure.
+
+    Filter: realized_return_bps != 0.0 AND action_type IN ('BUY',
+    'ROTATE', 'BACKFILL'). Applied inside the SQL so we don't ship
+    unresolved rows over the wire.
+    """
+    current_year = datetime.now(tz=timezone.utc).year
+    years = list(range(2020, current_year + 2))
+
+    parts: list[pd.DataFrame] = []
+    failed_years: list[int] = []
+    for yr in years:
+        sql = (
+            "SELECT symbol, ts, realized_return_bps FROM executions "
+            f"WHERE ts >= '{yr}-01-01' AND ts < '{yr + 1}-01-01' "
+            "AND realized_return_bps != 0.0 "
+            "AND action_type IN ('BUY', 'ROTATE', 'BACKFILL')"
+        )
+        try:
+            part = _rest_query_df(db, sql, timeout=120.0)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "build_training_matrix_executions_batch_failed",
+                year=yr, error=str(exc), error_type=type(exc).__name__,
+            )
+            failed_years.append(yr)
+            continue
+        if not part.empty:
+            log.info(
+                "build_training_matrix_executions_batch",
+                year=yr, n_rows=len(part),
+            )
+            parts.append(part)
+
+    if not parts:
+        log.error("build_training_matrix_executions_all_batches_failed",
+                  failed_years=failed_years)
+        return None
+    if failed_years:
+        log.warning(
+            "build_training_matrix_executions_partial",
+            failed_years=failed_years,
+            n_successful_batches=len(parts),
+        )
+    return pd.concat(parts, ignore_index=True)
 
 
 def _fetch_features_batched(
