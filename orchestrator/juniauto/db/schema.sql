@@ -291,6 +291,24 @@ CREATE TABLE IF NOT EXISTS market_regime (
 ) TIMESTAMP(ts) PARTITION BY DAY WAL;
 
 -- ============================================================
+-- Bayesian training event log — one row per successful retrain_from_db()
+-- across all callers (BayesianModel.__init__ warm-up, hourly resolution
+-- loop, backfill --retrain flag, backtest engine init). Feeds the Grafana
+-- "Bayesian retrain events" panel so we have direct evidence that the
+-- ridge is being updated. Absence of rows here = model is stale.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bayesian_training_events (
+    ts           TIMESTAMP,
+    source       SYMBOL CAPACITY 8 CACHE,     -- init | resolution | backfill | backtest
+    n_samples    INT,
+    n_features   INT,
+    y_mean       DOUBLE,
+    y_std        DOUBLE,
+    y_min        DOUBLE,
+    y_max        DOUBLE
+) TIMESTAMP(ts) PARTITION BY MONTH WAL;
+
+-- ============================================================
 -- Source package evidence scores (§2.20)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS source_evidence (

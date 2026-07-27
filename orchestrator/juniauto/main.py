@@ -1206,7 +1206,7 @@ class JuniAuto:
         # returns intentionally excluded to avoid using our own predictions
         # as training labels).
         try:
-            n_trained = self.bayes.retrain_from_db()
+            n_trained = self.bayes.retrain_from_db(source="resolution")
             log.info("resolution_bayes_retrained", n_samples=n_trained)
         except Exception as e:  # noqa: BLE001
             log.warning("resolution_bayes_retrain_failed", error=str(e))

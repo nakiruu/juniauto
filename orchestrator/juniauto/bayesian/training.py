@@ -334,19 +334,23 @@ class BayesianModel:
         self._n_samples: int = 0
         # Attempt immediate warm-up from any already-resolved rows in the DB.
         try:
-            self.retrain_from_db()
+            self.retrain_from_db(source="init")
         except Exception as exc:  # noqa: BLE001
             log.warning("bayesian_init_retrain_failed", error=str(exc))
 
-    def retrain_from_db(self) -> int:
+    def retrain_from_db(self, source: str = "unknown") -> int:
         """Rebuild the ridge posterior from all resolved executions.
+
+        Args:
+            source: caller label persisted to bayesian_training_events for
+                observability (`init`, `resolution`, `backfill`, `backtest`).
 
         Returns:
             Number of training samples used. 0 if training was skipped.
         """
         result = build_training_matrix(self._db)
         if result is None:
-            log.info("bayesian_retrain_skipped", reason="insufficient_resolved_rows")
+            log.info("bayesian_retrain_skipped", reason="insufficient_resolved_rows", source=source)
             return 0
 
         X, y, weights, col_groups = result
@@ -357,13 +361,42 @@ class BayesianModel:
                 "bayesian_trained",
                 n_samples=self._n_samples,
                 n_features=X.shape[1],
+                source=source,
             )
         except Exception as exc:  # noqa: BLE001
-            log.error("bayesian_ridge_update_failed", error=str(exc))
+            log.error("bayesian_ridge_update_failed", error=str(exc), source=source)
             self._n_samples = 0
             return 0
 
+        # Persist a training event so Grafana can show retrain history.
+        # ILP write; failure here must not roll back the model update.
+        try:
+            self._persist_training_event(source=source, X=X, y=y)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("bayesian_training_event_persist_failed",
+                        error=str(exc), error_type=type(exc).__name__)
+
         return self._n_samples
+
+    def _persist_training_event(self, *, source: str, X: np.ndarray, y: np.ndarray) -> None:
+        """Write one row to bayesian_training_events. Best-effort — errors
+        are caught by the caller so a broken write path never blocks a
+        successful ridge fit."""
+        import datetime as _dt
+        with self._db.sender() as s:
+            s.row(
+                "bayesian_training_events",
+                symbols={"source": source},
+                columns={
+                    "n_samples": int(X.shape[0]),
+                    "n_features": int(X.shape[1]),
+                    "y_mean": float(np.mean(y)),
+                    "y_std": float(np.std(y)),
+                    "y_min": float(np.min(y)),
+                    "y_max": float(np.max(y)),
+                },
+                at=_dt.datetime.now(tz=_dt.timezone.utc),
+            )
 
     def predict(self, feature_row: pd.Series) -> tuple[float, float]:
         """Predict (mu_edge_bps, sigma_total_bps) for a single candidate.

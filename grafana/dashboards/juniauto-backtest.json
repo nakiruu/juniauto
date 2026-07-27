@@ -320,11 +320,12 @@
     {
       "id": 152,
       "type": "timeseries",
-      "title": "Bayesian retrain events (n_samples)",
+      "title": "Bayesian retrain events (n_samples by source)",
+      "description": "One point per successful retrain_from_db() call. Sources: init (engine boot), resolution (hourly resolution loop), backfill (--retrain flag), backtest (engine __init__ during backtest run). Absence of recent points = model is stale.",
       "datasource": {"type": "postgres", "uid": "QuestDB"},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 88},
       "targets": [
-        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, run_id AS metric, n_samples AS value FROM backtest_bayes_snapshots WHERE run_id = '${run_id}' AND $__timeFilter(ts) ORDER BY ts"}
+        {"format": "time_series", "rawQuery": true, "rawSql": "SELECT ts AS time, source AS metric, n_samples AS value FROM bayesian_training_events WHERE $__timeFilter(ts) ORDER BY ts"}
       ],
       "fieldConfig": {"defaults": {"custom": {"drawStyle": "points", "pointSize": 8, "fillOpacity": 0}, "unit": "short"}}
     }

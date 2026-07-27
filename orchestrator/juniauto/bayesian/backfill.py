@@ -388,7 +388,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     if args.retrain:
         try:
             model = BayesianModel(db, cfg)
-            n_train = model.retrain_from_db()
+            n_train = model.retrain_from_db(source="backfill")
             log.info("backfill_retrain_complete", n_samples=n_train,
                      is_trained=model.is_trained())
         except Exception as e:  # noqa: BLE001
