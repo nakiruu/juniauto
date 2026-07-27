@@ -71,6 +71,10 @@ services:
       - ./config:/app/config:ro
       - ./logs:/app/logs
       - ./data/cache:/app/cache
+      # Experiments bind-mount: iterate sandbox code without rebuilding
+      # the image. The Dockerfile also COPYs experiments/ so this is
+      # optional for production deploys, but during research it's essential.
+      - ./experiments:/app/experiments:ro
     # Docker's default nofile soft limit is 1024, which is too low for a long-
     # running process that maintains ILP writer contexts, psycopg pooled
     # connections, prometheus_client sockets, APScheduler timers, and yfinance

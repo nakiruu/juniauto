@@ -63,6 +63,7 @@ COPY orchestrator/requirements.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY orchestrator/ ./
+COPY experiments/ ./experiments/
 COPY config/ /app/config/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
