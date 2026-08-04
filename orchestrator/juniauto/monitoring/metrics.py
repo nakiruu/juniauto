@@ -251,6 +251,13 @@ stops_skipped_pdt_total: Counter = Counter(
     labelnames=["reason"],
 )
 
+stops_skipped_market_too_close_total: Counter = Counter(
+    "juniauto_stops_skipped_market_too_close_total",
+    "Cumulative stops skipped because the computed level was at or above the "
+    "current market price even after below-market capping. Indicates the "
+    "position has already broken through the chandelier / posterior level.",
+)
+
 
 # ---- Convenience helper ----
 

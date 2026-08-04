@@ -163,6 +163,73 @@ def compute_level(
     )
 
 
+# Alpaca broker constraints on stop-order prices:
+#   * Stocks priced >= $1.00: stop must be in whole-penny increments ($0.01).
+#   * Stocks priced <  $1.00: stop must be in sub-penny increments ($0.0001).
+#   * For SELL stops: stop_price must be STRICTLY LESS THAN the current price.
+# Violations return error code 42210000. See:
+#   https://docs.alpaca.markets/docs/orders-at-alpaca#order-types
+_TICK_STOCK = 0.01
+_TICK_SUB_DOLLAR = 0.0001
+# Minimum gap between the submitted stop and current market. Absorbs
+# intraday jitter so a random bid tick doesn't fire the stop immediately
+# after submit. 25 bps = 0.25% below market — tight enough that a name
+# already breaking down still gets a live stop, wide enough that ordinary
+# spread noise doesn't trigger it. Not currently a config knob (revisit
+# after 30 days of live data).
+_MIN_STOP_OFFSET_BPS = 25.0
+
+
+def snap_to_broker_tick(
+    computed_stop: float,
+    current_price: float,
+    side: str = "sell",
+) -> tuple[float, str]:
+    """Round the computed stop to Alpaca's minimum tick and enforce the
+    below-market constraint for SELL stops.
+
+    Returns ``(adjusted_stop, note)`` where ``note`` is:
+        ""                       — no adjustment needed
+        "penny_floor"            — floored to nearest tick
+        "capped_below_market"    — pulled down to min offset below current
+        "too_close_to_market"    — market so close no valid stop exists;
+                                   caller should skip this submission
+
+    For side="sell" (the only case we currently use), the returned stop is
+    guaranteed to be strictly less than current_price.
+    """
+    if computed_stop <= 0 or current_price <= 0:
+        return 0.0, "too_close_to_market"
+    tick = _TICK_STOCK if current_price >= 1.0 else _TICK_SUB_DOLLAR
+
+    if side != "sell":
+        # Buy stops (not used by TrailingStopManager today) — ceiling to tick.
+        adjusted = math.ceil(computed_stop / tick) * tick
+        return round(adjusted, 4), ""
+
+    # Enforce below-market cap: stop must be <= current * (1 - min_offset).
+    max_allowed = current_price * (1.0 - _MIN_STOP_OFFSET_BPS / 10_000.0)
+    was_capped = computed_stop > max_allowed
+    capped = min(computed_stop, max_allowed)
+
+    # Floor to broker tick (rounds DOWN, so stop is at or below `capped`).
+    adjusted = math.floor(capped / tick) * tick
+    # Guard against float representation drift (e.g. 386.05000000000001).
+    decimals = 4 if tick == _TICK_SUB_DOLLAR else 2
+    adjusted = round(adjusted, decimals)
+
+    # Final sanity: if floor pushed us to zero (or below) the position is
+    # priced too low for any valid offset. Skip the submission.
+    if adjusted <= 0 or adjusted >= current_price:
+        return 0.0, "too_close_to_market"
+
+    if was_capped:
+        return adjusted, "capped_below_market"
+    if abs(adjusted - computed_stop) >= tick / 2.0:
+        return adjusted, "penny_floor"
+    return adjusted, ""
+
+
 def should_replace(
     *,
     cfg: StopsConfig,
@@ -393,12 +460,52 @@ class TrailingStopManager:
             existing_broker = broker_stops.get(symbol)
             alpaca_order_id: str | None = None
             submitted_to_broker = False
+            # Broker-adjusted stop (penny-floored + capped below market). This is
+            # what actually goes to Alpaca AND what we persist to active_stops,
+            # so audit rows reflect reality rather than the theoretical level.
+            broker_stop = level.stop_price
+            broker_note = ""
 
             if not in_canary:
                 # Shadow mode for this symbol — persist only, do NOT submit.
                 shadow_count += 1
                 summary["skipped_shadow"] += 1
             else:
+                # Snap computed level to a valid Alpaca tick + below-market cap.
+                # Handles both sub-penny rejection (42210000 "sub-penny increment")
+                # and above-market rejection (42210000 "stop price must be less
+                # than current price").
+                broker_stop, broker_note = snap_to_broker_tick(
+                    computed_stop=level.stop_price,
+                    current_price=current_close,
+                    side="sell",
+                )
+                if broker_note == "too_close_to_market":
+                    summary["skipped_market_too_close"] = summary.get("skipped_market_too_close", 0) + 1
+                    m.stops_skipped_market_too_close_total.inc()
+                    log.info(
+                        "stop_skip_market_too_close", symbol=symbol,
+                        computed_stop=round(level.stop_price, 4),
+                        current_close=round(current_close, 4),
+                    )
+                    # Persist the un-submitted row so we have audit visibility.
+                    self._persist_active_stop(
+                        symbol=symbol, level=level, entry_ts=entry_ts,
+                        entry_price=entry_price, alpaca_order_id=None,
+                        cycle_type=cycle_type, in_canary=True,
+                        submitted_to_broker=False, now=now,
+                        adjusted_stop_price=level.stop_price,
+                    )
+                    continue
+
+                if broker_note:
+                    log.info(
+                        "stop_price_adjusted", symbol=symbol,
+                        computed=round(level.stop_price, 4),
+                        adjusted=round(broker_stop, 4),
+                        reason=broker_note, current_close=round(current_close, 4),
+                    )
+
                 # 15:55 = fresh DAY submit (prior DAY expired at 16:00 unless still standing)
                 # 09:45/12:30 = hysteresis REPLACE only where needed
                 try:
@@ -412,7 +519,7 @@ class TrailingStopManager:
                             except Exception as ce:  # noqa: BLE001
                                 log.warning("stop_precycle_cancel_failed", symbol=symbol, error=str(ce))
                         alpaca_order_id = self._alpaca.submit_stop_market(
-                            symbol=symbol, qty=qty, stop_price=level.stop_price, side="sell",
+                            symbol=symbol, qty=qty, stop_price=broker_stop, side="sell",
                         )
                         submitted_to_broker = True
                         summary["submitted"] += 1
@@ -423,21 +530,21 @@ class TrailingStopManager:
                             # No standing stop (shouldn't normally happen post-1555 submit,
                             # but a fresh entry today with entry_day_exempt=false could land here)
                             alpaca_order_id = self._alpaca.submit_stop_market(
-                                symbol=symbol, qty=qty, stop_price=level.stop_price, side="sell",
+                                symbol=symbol, qty=qty, stop_price=broker_stop, side="sell",
                             )
                             submitted_to_broker = True
                             summary["submitted"] += 1
                             m.stops_submit_events_total.labels(cycle_type=cycle_type).inc()
                         else:
                             cur = float(existing_broker.get("stop_price") or 0.0)
-                            if should_replace(cfg=self._cfg, new_stop=level.stop_price,
+                            if should_replace(cfg=self._cfg, new_stop=broker_stop,
                                               current_broker_stop=cur, atr_20=atr_20):
                                 try:
                                     self._alpaca.cancel_order(existing_broker["id"])
                                 except Exception as ce:  # noqa: BLE001
                                     log.warning("stop_replace_cancel_failed", symbol=symbol, error=str(ce))
                                 alpaca_order_id = self._alpaca.submit_stop_market(
-                                    symbol=symbol, qty=qty, stop_price=level.stop_price, side="sell",
+                                    symbol=symbol, qty=qty, stop_price=broker_stop, side="sell",
                                 )
                                 submitted_to_broker = True
                                 summary["replaced"] += 1
@@ -465,6 +572,7 @@ class TrailingStopManager:
                 entry_price=entry_price, alpaca_order_id=alpaca_order_id,
                 cycle_type=cycle_type, in_canary=in_canary,
                 submitted_to_broker=submitted_to_broker, now=now,
+                adjusted_stop_price=broker_stop,
             )
 
         # Emit metrics for this cycle
@@ -725,13 +833,18 @@ class TrailingStopManager:
         in_canary: bool,
         submitted_to_broker: bool,
         now: datetime,
+        adjusted_stop_price: float | None = None,
     ) -> None:
+        # Persist the ADJUSTED (broker-tick, below-market-capped) stop price
+        # so audit rows reflect what Alpaca actually holds. Fall back to the
+        # theoretical level.stop_price when no adjustment happened (shadow mode).
+        persisted_stop = float(adjusted_stop_price) if adjusted_stop_price is not None else float(level.stop_price)
         with self._db.sender() as s:
             columns: dict[str, object] = {
                 "entry_ts": entry_ts if entry_ts is not None else now,
                 "entry_price": float(entry_price),
                 "high_water_mark": float(level.high_water_mark),
-                "current_stop_price": float(level.stop_price),
+                "current_stop_price": persisted_stop,
                 "chandelier_component": float(level.chandelier_component),
                 "posterior_component": float(level.posterior_component),
                 "posterior_edge_bps": float(level.posterior_edge_bps),

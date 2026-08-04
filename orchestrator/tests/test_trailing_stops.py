@@ -11,7 +11,12 @@ from dataclasses import dataclass
 import pytest
 
 from juniauto.config import StopsConfig
-from juniauto.execution import compute_atr, compute_level, should_replace
+from juniauto.execution import (
+    compute_atr,
+    compute_level,
+    should_replace,
+    snap_to_broker_tick,
+)
 
 
 # Lightweight Bar stub for compute_atr — matches the fields the function reads.
@@ -293,6 +298,80 @@ def test_scenario_rok_style_posterior_tightens_when_bayesian_turns_adverse() -> 
     assert today.stop_price == pytest.approx(95.5)
     assert today.method == "flat_prior"
     assert today.conservative_edge_bps == pytest.approx(-7.0)
+
+
+# --------------------------------------------------------------------------
+# snap_to_broker_tick — Alpaca sub-penny + below-market rejection fixes
+# --------------------------------------------------------------------------
+
+def test_snap_floors_sub_penny_stops_for_dollar_plus_stocks() -> None:
+    """Alpaca rejects stops with sub-penny increments for stocks >= $1."""
+    # 310.2954817527754 -> floor to 310.29
+    adjusted, note = snap_to_broker_tick(310.2954817527754, current_price=320.0)
+    assert adjusted == pytest.approx(310.29)
+    assert note == "penny_floor"
+
+
+def test_snap_half_penny_floors_down() -> None:
+    """97.645 must become 97.64 (floor), not 97.65 (round)."""
+    adjusted, note = snap_to_broker_tick(97.645, current_price=98.0)
+    assert adjusted == pytest.approx(97.64)
+    assert note == "penny_floor"
+
+
+def test_snap_whole_penny_no_adjustment() -> None:
+    """Clean whole-penny stop below market -> no note."""
+    adjusted, note = snap_to_broker_tick(100.00, current_price=105.00)
+    assert adjusted == pytest.approx(100.00)
+    assert note == ""
+
+
+def test_snap_caps_stop_above_market() -> None:
+    """AMGN-style: computed 387.12 vs current 387.02.
+    Must be capped 25 bps below current."""
+    adjusted, note = snap_to_broker_tick(387.12, current_price=387.02)
+    # max_allowed = 387.02 * (1 - 25/10000) = 386.052...
+    # floor to penny: 386.05
+    assert adjusted == pytest.approx(386.05)
+    assert note == "capped_below_market"
+    assert adjusted < 387.02  # strictly below market
+
+
+def test_snap_caps_stop_equal_to_market() -> None:
+    """MBB-style: stop == current market. Must be pulled below."""
+    adjusted, note = snap_to_broker_tick(93.27, current_price=93.27)
+    # max_allowed = 93.27 * 0.9975 = 93.03...
+    assert adjusted == pytest.approx(93.03)
+    assert note == "capped_below_market"
+
+
+def test_snap_sub_dollar_uses_finer_tick() -> None:
+    """Stocks < $1 use $0.0001 tick, not $0.01."""
+    adjusted, note = snap_to_broker_tick(0.8543299, current_price=0.90)
+    assert adjusted == pytest.approx(0.8543)
+    assert note == "penny_floor"
+
+
+def test_snap_returns_zero_when_market_too_close() -> None:
+    """Degenerate input -> caller must skip submission."""
+    adjusted, note = snap_to_broker_tick(0.0, current_price=100.0)
+    assert adjusted == 0.0
+    assert note == "too_close_to_market"
+
+    adjusted, note = snap_to_broker_tick(50.0, current_price=0.0)
+    assert adjusted == 0.0
+    assert note == "too_close_to_market"
+
+
+def test_snap_never_returns_price_at_or_above_market() -> None:
+    """Invariant: for side='sell', returned stop < current_price always."""
+    for computed, current in [
+        (100.0, 100.0), (100.5, 100.0), (99.99, 100.0),
+        (10.005, 10.00), (1000.0, 999.5),
+    ]:
+        adjusted, _ = snap_to_broker_tick(computed, current_price=current)
+        if adjusted > 0:
+            assert adjusted < current, f"stop {adjusted} not below market {current}"
 
 
 def test_scenario_pltr_style_stop_ratchets_up_on_strong_run() -> None:

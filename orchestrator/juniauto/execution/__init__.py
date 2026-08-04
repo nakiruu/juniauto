@@ -6,6 +6,7 @@ from juniauto.execution.trailing_stops import (
     compute_atr,
     compute_level,
     should_replace,
+    snap_to_broker_tick,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "compute_atr",
     "compute_level",
     "should_replace",
+    "snap_to_broker_tick",
 ]
