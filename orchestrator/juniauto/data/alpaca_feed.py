@@ -19,6 +19,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    StopOrderRequest,
 )
 
 from juniauto.config import AlpacaConfig
@@ -203,6 +204,80 @@ class AlpacaFeed:
     def cancel_order(self, order_id: str) -> None:
         self._trading.cancel_order_by_id(order_id)
         log.info("order_cancel", id=order_id)
+
+    # ---- Stop orders (trailing stop management, added 2026-08-04) ----
+    # Alpaca supports stop-market and stop-limit on fractional shares BUT
+    # ONLY with time_in_force=DAY. Trailing stops and bracket orders are
+    # unsupported on fractional. That's why we self-manage the trailing
+    # logic in trailing_stops.py rather than using TrailingStopOrderRequest.
+    def submit_stop_market(
+        self,
+        symbol: str,
+        qty: float,
+        stop_price: float,
+        side: str = "sell",
+    ) -> str:
+        """Submit a DAY stop-market. Fractional qty allowed.
+
+        Auto-expires at 16:00 ET the same session. Caller is responsible
+        for resubmitting each 15:55 cycle if the position is still held.
+        """
+        req = StopOrderRequest(
+            symbol=symbol,
+            qty=qty,
+            side=OrderSide.SELL if side == "sell" else OrderSide.BUY,
+            time_in_force=TimeInForce.DAY,
+            stop_price=stop_price,
+        )
+        order = self._trading.submit_order(req)
+        oid = str(order.id)  # type: ignore[union-attr]
+        log.info(
+            "stop_submit_market",
+            symbol=symbol, qty=qty, side=side, stop_price=stop_price, id=oid,
+        )
+        return oid
+
+    def list_open_stops(self) -> list[dict[str, Any]]:
+        """Fetch all open stop orders (both stop-market and stop-limit)."""
+        req = GetOrdersRequest(status="open")  # type: ignore[arg-type]
+        out: list[dict[str, Any]] = []
+        for o in self._trading.get_orders(filter=req):  # type: ignore[union-attr]
+            ot = o.order_type.value if hasattr(o.order_type, "value") else str(o.order_type)
+            if ot not in ("stop", "stop_limit"):
+                continue
+            out.append({
+                "id": str(o.id),
+                "symbol": o.symbol,
+                "qty": float(o.qty or 0),
+                "side": o.side.value if hasattr(o.side, "value") else str(o.side),
+                "type": ot,
+                "stop_price": float(o.stop_price) if o.stop_price else None,
+                "limit_price": float(o.limit_price) if o.limit_price else None,
+                "submitted_at": o.submitted_at,
+            })
+        return out
+
+    def list_recent_stop_fills(self, since: datetime) -> list[dict[str, Any]]:
+        """Fetch filled stop orders since `since`. Used by resolution loop
+        to detect stop triggers and register hurdle penalties."""
+        req = GetOrdersRequest(status="closed", after=since)  # type: ignore[arg-type,call-arg]
+        out: list[dict[str, Any]] = []
+        for o in self._trading.get_orders(filter=req):  # type: ignore[union-attr]
+            ot = o.order_type.value if hasattr(o.order_type, "value") else str(o.order_type)
+            if ot not in ("stop", "stop_limit"):
+                continue
+            status = o.status.value if hasattr(o.status, "value") else str(o.status)
+            if status != "filled":
+                continue
+            out.append({
+                "id": str(o.id),
+                "symbol": o.symbol,
+                "qty": float(o.filled_qty or o.qty or 0),
+                "stop_price": float(o.stop_price) if o.stop_price else None,
+                "fill_price": float(o.filled_avg_price) if o.filled_avg_price else None,
+                "filled_at": o.filled_at,
+            })
+        return out
 
     # ---- Clock / calendar ----
     def get_clock(self) -> dict[str, Any]:

@@ -150,6 +150,37 @@ regime:
   regime_stress_ema_halflife_days: 5.0     # 1 trading-week smoothing
   reference_symbol: SPY
 
+# --- Trailing stop management (added 2026-08-04) ---
+# Broker-side DAY stop-market orders on all held positions, resubmitted every
+# 15:55 ET. Level = max(HWM - 3xATR, close x (1 - k_vol x daily_vol)) with
+# posterior-conditional k selection. Ratchets up only. 09:45 phantom can
+# REPLACE past hysteresis. Re-entry gated by decaying EV-hurdle bump.
+#
+# Rollout gate: canary_symbols. Empty list [] = SHADOW MODE (compute levels,
+# persist to active_stops, do NOT submit to Alpaca — safe default). Populate
+# with an allowlist to submit real stops on those names only. Set to ["*"] to
+# enable for all held positions once you've watched shadow data for a week.
+stops:
+  enabled: true                            # master kill switch
+  canary_symbols: ["*"]                    # [] = shadow only; ["*"] = enable all; else allowlist
+  # Level formula
+  k_chandelier: 3.0                        # HWM - 3 x ATR_20 (industry standard)
+  atr_lookback_days: 20
+  k_loose_vol: 3.0                         # posterior-conditional when conservative_edge >= 0
+  k_tight_vol: 1.0                         # posterior-conditional when conservative_edge < 0
+  # Hysteresis (09:45 REPLACE gate; 15:55 always submits fresh)
+  min_replace_delta_pct: 0.005             # 50 bps of price
+  min_replace_delta_atr_frac: 0.05         # OR 5% of ATR — whichever is larger
+  # Re-entry hurdle bump — decays with halflife=3 sessions
+  bump_initial_bps: 50.0
+  bump_halflife_sessions: 3.0
+  bump_deactivate_threshold_bps: 1.0       # below this the penalty row is marked inactive
+  # Operational — Alpaca rate limits ~200 req/min
+  submit_batch_size: 20
+  submit_pause_ms: 200
+  # PDT: never submit a stop on entry day — would fire as a day trade
+  entry_day_exempt: true
+
 # --- Shadow monitor (§2.41) ---
 shadow:
   prior_delta: 0.0

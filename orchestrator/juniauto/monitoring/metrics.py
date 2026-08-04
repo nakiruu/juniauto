@@ -185,6 +185,73 @@ regime_avg_pairwise_corr_gauge: Gauge = Gauge(
 )
 
 
+# ---- Trailing stop management (added 2026-08-04) ----
+# All labelled by `cycle_type` so we can compare 09:45 vs 15:55 replace churn.
+# The shadow_mode gauge tells you whether stops are actually being submitted
+# to Alpaca or only being computed and persisted.
+
+stops_shadow_mode_gauge: Gauge = Gauge(
+    "juniauto_stops_shadow_mode",
+    "1 if canary_symbols is empty (shadow mode — compute + persist only, no broker submits), "
+    "0 if at least one symbol is being submitted to Alpaca.",
+)
+
+stops_active_count_gauge: Gauge = Gauge(
+    "juniauto_stops_active_count",
+    "Number of positions with an active broker-side stop at the end of the cycle. "
+    "Excludes shadow-mode (computed-but-not-submitted) rows.",
+    labelnames=["cycle_type"],
+)
+
+stops_shadow_count_gauge: Gauge = Gauge(
+    "juniauto_stops_shadow_count",
+    "Number of positions with a shadow-computed stop level (not sent to Alpaca) "
+    "this cycle. Sum with stops_active_count = total positions with a stop level.",
+    labelnames=["cycle_type"],
+)
+
+stops_avg_distance_bps_gauge: Gauge = Gauge(
+    "juniauto_stops_avg_distance_bps",
+    "Mean (close - stop_price) / close x 10000 across active stops. Rising = "
+    "posterior turning bullish or HWM moving up; falling = stops tightening.",
+    labelnames=["cycle_type"],
+)
+
+stops_submit_events_total: Counter = Counter(
+    "juniauto_stops_submit_events_total",
+    "Cumulative stop-order submits to Alpaca (excludes shadow-mode).",
+    labelnames=["cycle_type"],
+)
+
+stops_replace_events_total: Counter = Counter(
+    "juniauto_stops_replace_events_total",
+    "Cumulative stop-order REPLACE events (hysteresis-triggered at 09:45).",
+    labelnames=["reason"],
+)
+
+stops_cancel_events_total: Counter = Counter(
+    "juniauto_stops_cancel_events_total",
+    "Cumulative stop-order cancellations (position closed by other means, canary drop, etc).",
+    labelnames=["reason"],
+)
+
+stops_triggered_total: Counter = Counter(
+    "juniauto_stops_triggered_total",
+    "Cumulative stop-triggered fills. See stop_triggers table for per-fill audit.",
+)
+
+stops_hurdle_bumps_active_gauge: Gauge = Gauge(
+    "juniauto_stops_hurdle_bumps_active",
+    "Number of symbols with an active EV-hurdle bump (post-stop-out re-entry gate).",
+)
+
+stops_skipped_pdt_total: Counter = Counter(
+    "juniauto_stops_skipped_pdt_total",
+    "Cumulative stops skipped due to PDT constraints (entry-day exemption or cap).",
+    labelnames=["reason"],
+)
+
+
 # ---- Convenience helper ----
 
 class Metrics:

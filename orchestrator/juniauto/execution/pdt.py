@@ -121,6 +121,27 @@ class PDTTracker:
         d = to_et(now or datetime.now(tz=ET)).date()
         return trading_days_between(opened, d) >= 1
 
+    def will_stop_be_day_trade(
+        self,
+        symbol: str,
+        entry_ts: datetime,
+        now: datetime | None = None,
+    ) -> bool:
+        """Would a stop-triggered fill *right now* count as a day trade?
+
+        Used by TrailingStopManager to decide whether to submit a stop for
+        this position — if a fill would be a day trade AND we're at cap,
+        the stop is skipped (would be rejected by broker anyway, plus PDT
+        counter would increment). If cap has room, the stop is still valid
+        but we log the day-trade risk.
+
+        Returns True when: entry_ts is same calendar day as `now`.
+        (The rolling-5-day cap check is separate via count_in_window.)
+        """
+        entry_d = to_et(entry_ts).date()
+        now_d = to_et(now or datetime.now(tz=ET)).date()
+        return entry_d == now_d
+
     # ---- Introspection ----
     def snapshot(self) -> dict[str, object]:
         return {

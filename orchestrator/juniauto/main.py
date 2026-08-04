@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import math
 import signal
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +27,7 @@ from juniauto.bayesian import (
 from juniauto.config import JuniAutoConfig, load_config
 from juniauto.data import AlpacaFeed, DataAggregator, UniverseBuilder, YahooFeed
 from juniauto.db import QuestDBClient
-from juniauto.execution import OrderManager, PDTTracker
+from juniauto.execution import OrderManager, PDTTracker, TrailingStopManager
 from juniauto.monitoring import metrics as m
 from juniauto.portfolio import (
     Candidate,
@@ -59,6 +59,11 @@ class JuniAuto:
         self.universe = UniverseBuilder(self.alpaca._trading, cfg.universe)  # type: ignore[attr-defined]
         self.aggregator = DataAggregator(cfg, self.alpaca, self.yahoo, self.db)
         self.order_mgr = OrderManager(self.alpaca, self.db, self.pdt)
+        # Trailing stop manager — chandelier + posterior-conditional hybrid,
+        # fractional-share aware via Alpaca DAY stop-market orders. Gated by
+        # cfg.stops.canary_symbols so shadow mode is the default; populate
+        # the canary list to submit real broker-side stops.
+        self.stop_mgr = TrailingStopManager(cfg.stops, self.db, self.alpaca, self.pdt)
         self.replay = ReplayHarness(cfg, self.db)
         # Bayesian model — instantiated after replay so DB is confirmed reachable.
         # Immediately attempts retrain_from_db(); falls through to cold-start (0.0)
@@ -416,6 +421,18 @@ class JuniAuto:
         # phantom resolver, which reads bars and updates realized_return_bps
         # on the phantom_gateway_actions rows.
         if not execute:
+            # Step 6.5 (phantom side) — trailing stop management still runs on
+            # phantom cycles because the standing Alpaca stops are real
+            # regardless of which python cycle triggered the recompute. At
+            # 09:40 / 12:30 this fires hysteresis-triggered REPLACE only.
+            try:
+                self._manage_stops(
+                    cycle_type=cycle_type, positions=self.alpaca.get_positions(),
+                    snap=snap, features=features, predictions=predictions, now=now,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.error("step6_5_stops_failed_phantom", error=str(e),
+                          error_type=type(e).__name__)
             log.info(
                 "phantom_cycle_end",
                 cycle_type=cycle_type,
@@ -563,7 +580,68 @@ class JuniAuto:
             held=held,
             dead_band=dead_band,
         )
+
+        # Step 6.5 (live) — trailing stop management on the fresh post-order
+        # position set. cycle_type="1555" triggers the fresh DAY-stop submit
+        # path in TrailingStopManager (prior DAY orders expire at 16:00 ET).
+        try:
+            self._manage_stops(
+                cycle_type="1555",
+                positions=self.alpaca.get_positions(),
+                snap=snap, features=features, predictions=predictions, now=now,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.error("step6_5_stops_failed_live", error=str(e),
+                      error_type=type(e).__name__)
         log.info("cycle_end")
+
+    # ---- Step 6.5 helper ----
+    def _manage_stops(
+        self,
+        *,
+        cycle_type: str,
+        positions: list[dict[str, object]],
+        snap: "MarketSnapshot",  # noqa: F821
+        features: pd.DataFrame,
+        predictions: list[dict[str, object]],
+        now: datetime,
+    ) -> None:
+        """Run TrailingStopManager.manage_cycle with the payload it needs.
+
+        Maps main.py's phantom cycle_type strings ('0940', '1230', 'live')
+        onto the manager's semantics ('0945', '1230', '1555') — 15:55 is the
+        fresh DAY-submit path, everything else is hysteresis REPLACE.
+        """
+        if not self.cfg.stops.enabled:
+            return
+        stop_cycle = "1555" if cycle_type in ("live", "1555") else cycle_type
+        # Convert DataFrame + list to the dict[str, ...] shapes the manager expects.
+        features_by_symbol: dict[str, dict[str, float]] = {}
+        if features is not None and not features.empty:
+            for sym, row in features.iterrows():
+                # Only keep the fields the manager uses; drop NaNs.
+                features_by_symbol[str(sym)] = {
+                    "realized_vol_bps": float(row.get("realized_vol_bps", 0.0) or 0.0)
+                    if pd.notna(row.get("realized_vol_bps"))
+                    else 0.0,
+                }
+        predictions_by_symbol: dict[str, dict[str, float]] = {
+            str(p["symbol"]): {
+                "mu_edge_bps": float(p.get("mu_edge_bps", 0.0) or 0.0),
+                "sigma_total_bps": float(p.get("sigma_total_bps", 0.0) or 0.0),
+                "composite_edge_bps": float(p.get("composite_edge_bps", 0.0) or 0.0),
+            }
+            for p in predictions
+        }
+        self.stop_mgr.manage_cycle(
+            cycle_type=stop_cycle,
+            positions=positions,
+            bars_by_symbol=snap.bars,
+            features_by_symbol=features_by_symbol,
+            predictions_by_symbol=predictions_by_symbol,
+            now=now,
+            zq=float(self.cfg.bayesian.zq),
+        )
 
     # ---- Step 5.5 helpers ----
     def _current_weights_by_symbol(self, equity: float) -> dict[str, float]:
@@ -837,8 +915,16 @@ class JuniAuto:
         )
         cost = qe.compute_cost(order, state, slippage, self.cost_cfg, float(pred["composite_edge_bps"]))
 
-        executed = bool(evaluation.executes())
-        reject_reason = "" if executed else "net_edge_below_hurdle"
+        # EV-hurdle bump for recently-stopped-out names (§2.44-consistent —
+        # this is an EV buffer added to minimum_hurdle_bps, not a block).
+        # Bump decays with halflife=cfg.stops.bump_halflife_sessions.
+        hurdle_bump_bps = self.stop_mgr.get_hurdle_bump_bps(symbol, now) if self.cfg.stops.enabled else 0.0
+        effective_net_edge_bps = float(evaluation.net_edge_bps) - hurdle_bump_bps
+        executed = effective_net_edge_bps > 0.0
+        if not executed:
+            reject_reason = "hurdle_bump" if hurdle_bump_bps > 0.0 else "net_edge_below_hurdle"
+        else:
+            reject_reason = ""
 
         return {
             "symbol": symbol,
@@ -855,6 +941,7 @@ class JuniAuto:
             "total_cost_bps": float(evaluation.total_cost_bps),
             "net_edge_bps": float(evaluation.net_edge_bps),
             "hurdle_bps": float(self.cfg.model.minimum_hurdle_bps),
+            "hurdle_bump_bps": float(hurdle_bump_bps),
             "friction_multiplier": float(pred["friction_multiplier"]),
             "executed": executed,
             "reject_reason": reject_reason,
@@ -884,6 +971,7 @@ class JuniAuto:
             "total_cost_bps": 0.0,
             "net_edge_bps": 0.0,
             "hurdle_bps": 0.0,
+            "hurdle_bump_bps": 0.0,
             "friction_multiplier": float(pred["friction_multiplier"]),
             "executed": False,
             "reject_reason": reason,
@@ -948,6 +1036,7 @@ class JuniAuto:
                         "total_cost_bps": float(a["total_cost_bps"]),
                         "net_edge_bps": float(a["net_edge_bps"]),
                         "hurdle_bps": float(a["hurdle_bps"]),
+                        "hurdle_bump_bps": float(a.get("hurdle_bump_bps", 0.0)),
                         "friction_multiplier": float(a["friction_multiplier"]),
                         "executed": bool(a["executed"]),
                         "target_weight": float(a.get("target_weight", 0.0)),
@@ -995,6 +1084,7 @@ class JuniAuto:
                         "total_cost_bps": float(a["total_cost_bps"]),
                         "net_edge_bps": float(a["net_edge_bps"]),
                         "hurdle_bps": float(a["hurdle_bps"]),
+                        "hurdle_bump_bps": float(a.get("hurdle_bump_bps", 0.0)),
                         "friction_multiplier": float(a["friction_multiplier"]),
                         "executed": bool(a["executed"]),
                         "target_weight": float(a.get("target_weight", 0.0)),
@@ -1201,6 +1291,20 @@ class JuniAuto:
             log.info("resolution_phantoms_resolved", n_resolved=n_phantoms)
         except Exception as e:  # noqa: BLE001
             log.warning("resolution_phantoms_failed", error=str(e))
+
+        # Reconcile trailing stop triggers — Alpaca-side fills of DAY stop
+        # orders that fired during the last hour. Writes stop_triggers rows,
+        # registers EV-hurdle penalties in stop_penalties, and decays expired
+        # penalties. Best-effort — never crashes the loop.
+        try:
+            if self.cfg.stops.enabled:
+                now_utc = datetime.now(tz=ET)
+                since = now_utc - timedelta(hours=2)  # 2h window covers 1h loop + jitter
+                n_triggers = self.stop_mgr.reconcile_triggered_stops(since=since, now=now_utc)
+                log.info("resolution_stops_reconciled", n_triggers=n_triggers)
+        except Exception as e:  # noqa: BLE001
+            log.warning("resolution_stops_reconcile_failed", error=str(e),
+                        error_type=type(e).__name__)
 
         # Retrain ridge on any newly-resolved rows (EXECUTIONS only; phantom
         # returns intentionally excluded to avoid using our own predictions

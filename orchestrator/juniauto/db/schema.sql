@@ -199,6 +199,12 @@ ALTER TABLE gateway_actions ADD COLUMN target_weight DOUBLE;
 ALTER TABLE gateway_actions ADD COLUMN current_weight DOUBLE;
 ALTER TABLE gateway_actions ADD COLUMN delta_weight DOUBLE;
 
+-- gateway_actions.* trailing-stop hurdle-bump audit column (added 2026-08-04)
+-- Records the bps added to minimum_hurdle_bps for a symbol that recently
+-- stopped out. reject_reason='hurdle_bump' when this caused the rejection.
+ALTER TABLE gateway_actions ADD COLUMN hurdle_bump_bps DOUBLE;
+ALTER TABLE phantom_gateway_actions ADD COLUMN hurdle_bump_bps DOUBLE;
+
 -- ============================================================
 -- Order / execution telemetry (§3.2 step 7)
 -- ============================================================
@@ -316,4 +322,82 @@ CREATE TABLE IF NOT EXISTS source_evidence (
     package_id       SYMBOL CAPACITY 32 CACHE,
     evidence_bps     DOUBLE,       -- G_p,t
     is_active        BOOLEAN
+) TIMESTAMP(ts) PARTITION BY MONTH WAL;
+
+-- ============================================================
+-- Trailing stop management (design decision 2026-08-04)
+--
+-- The system holds mostly fractional-share positions. Alpaca's fractional
+-- support permits stop-market orders as DAY-only, so every scan cycle
+-- resubmits the daily stop (natural expiry at 16:00 ET) plus the 09:45
+-- phantom cycle can REPLACE a live stop when the recomputed level
+-- differs from the standing broker-side level by more than the hysteresis
+-- threshold.
+--
+-- Level formula (chandelier + posterior-conditional hybrid):
+--   chandelier = high_water_mark - k_chandelier * ATR_20
+--   if conservative_edge >= 0:
+--       posterior = close_t * (1 - k_loose_vol * daily_vol_pct)
+--   else:
+--       posterior = close_t * (1 - k_tight_vol * daily_vol_pct)
+--   stop = max(chandelier, posterior, prior_stop)   -- trailing, ratchet-up only
+--
+-- Re-entry: EV-hurdle bump added to minimum_hurdle_bps for symbols that
+-- recently stopped out. Decays exponentially (bump_halflife_sessions).
+-- ============================================================
+
+-- Per-position stop state. One row per (symbol, cycle_type) tuple per day.
+-- `active` = true means alpaca_order_id refers to a currently-standing
+-- broker-side order. `triggered` = true after reconciliation detects a fill.
+CREATE TABLE IF NOT EXISTS active_stops (
+    ts                       TIMESTAMP,           -- last recompute time
+    symbol                   SYMBOL CAPACITY 8192 CACHE,
+    entry_ts                 TIMESTAMP,           -- position open (for min-hold check)
+    entry_price              DOUBLE,
+    high_water_mark          DOUBLE,              -- max close since entry
+    current_stop_price       DOUBLE,              -- what's live at Alpaca right now
+    chandelier_component     DOUBLE,              -- audit trail: F1 raw output
+    posterior_component      DOUBLE,              -- audit trail: F3 raw output
+    posterior_edge_bps       DOUBLE,              -- Bayesian mu at calc time
+    posterior_sigma_bps      DOUBLE,              -- Bayesian sigma at calc time
+    conservative_edge_bps    DOUBLE,              -- mu - zq * sigma (§2.6)
+    atr_20                   DOUBLE,              -- ATR used in chandelier component
+    daily_vol_pct            DOUBLE,              -- daily vol used in posterior component
+    qty                      DOUBLE,              -- fractional-share aware
+    alpaca_order_id          STRING,              -- current standing stop order id
+    cycle_type               SYMBOL CAPACITY 8 CACHE,  -- 0945 | 1230 | 1555
+    method                   SYMBOL CAPACITY 16 CACHE, -- hybrid | chandelier | posterior
+    active                   BOOLEAN,             -- broker-side order live
+    triggered                BOOLEAN,             -- reconciliation detected a fill
+    in_canary                BOOLEAN,             -- was in canary list at submit time
+    submitted_to_broker      BOOLEAN              -- vs shadow-only (canary excluded)
+) TIMESTAMP(ts) PARTITION BY DAY WAL;
+
+-- Audit log of stop fills. Written by the resolution loop when it detects
+-- a filled stop order at Alpaca. Feeds Grafana "stop trigger events" panel
+-- and provides training data (realized_return_bps -> executions row).
+CREATE TABLE IF NOT EXISTS stop_triggers (
+    ts                       TIMESTAMP,           -- fill time
+    symbol                   SYMBOL CAPACITY 8192 CACHE,
+    entry_ts                 TIMESTAMP,
+    entry_price              DOUBLE,
+    stop_price               DOUBLE,              -- level that fired
+    fill_price               DOUBLE,              -- actual fill (may differ from stop_price)
+    slippage_vs_stop_bps     DOUBLE,              -- (fill_price - stop_price) / stop_price * 10000
+    realized_return_bps      DOUBLE,              -- (fill - entry) / entry * 10000
+    qty                      DOUBLE,
+    holding_days             INT,                 -- trading days from entry to trigger
+    alpaca_order_id          STRING
+) TIMESTAMP(ts) PARTITION BY MONTH WAL;
+
+-- Re-entry hurdle-bump state. Written when a stop fires; read by
+-- _evaluate_gateway to bump minimum_hurdle_bps for that symbol.
+-- Bump decays exponentially with bump_halflife_sessions.
+CREATE TABLE IF NOT EXISTS stop_penalties (
+    ts                       TIMESTAMP,           -- when the stop fired
+    symbol                   SYMBOL CAPACITY 8192 CACHE,
+    initial_bump_bps         DOUBLE,
+    halflife_sessions        DOUBLE,
+    triggered_return_bps     DOUBLE,              -- realized_return_bps from stop_triggers
+    active                   BOOLEAN              -- false once bump decays below 1 bp
 ) TIMESTAMP(ts) PARTITION BY MONTH WAL;

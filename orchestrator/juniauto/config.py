@@ -240,6 +240,47 @@ class ShadowConfig(BaseModel):
     rho_label: dict[str, float]
 
 
+class StopsConfig(BaseModel):
+    """Trailing stop management (added 2026-08-04).
+
+    Broker-side DAY stop-market orders on all held positions, resubmitted
+    every 15:55 ET (Alpaca DAY expiry at 16:00). Level is the tighter of a
+    Chandelier floor and a posterior-conditional accelerator, ratcheting up
+    only. 09:45 phantom cycle can REPLACE when the level moves past the
+    hysteresis threshold. Re-entry after a stop-out gated by a decaying
+    EV-hurdle bump added to minimum_hurdle_bps.
+
+    Rollout: `canary_symbols` acts as the phase-4 gate. Empty list = shadow
+    mode (compute levels, persist to active_stops, do NOT submit to Alpaca).
+    Populate with a small allowlist to start submitting real stops on those
+    names only. Set to ["*"] to enable for all held positions.
+    """
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True                      # master kill switch
+    # Canary allowlist — empty = shadow only (compute + persist, no broker submits).
+    # ["*"] = enable for all held positions. Otherwise = only these symbols.
+    canary_symbols: list[str] = []
+    # Level formula — Chandelier floor (§2.31 drift, industry-standard 3xATR).
+    k_chandelier: float = 3.0
+    atr_lookback_days: int = 20
+    # Level formula — posterior-conditional accelerator (§2.6 conservative_edge).
+    k_loose_vol: float = 3.0   # conservative_edge >= 0: use loose stop
+    k_tight_vol: float = 1.0   # conservative_edge < 0: tighten aggressively
+    # Hysteresis at 09:45 phantom (15:55 always submits fresh DAY stops).
+    # REPLACE fires only when new_stop > current AND delta exceeds max(pct, atr_frac).
+    min_replace_delta_pct: float = 0.005      # 50 bps of price
+    min_replace_delta_atr_frac: float = 0.05  # OR 5% of ATR
+    # Re-entry EV-hurdle bump (§2.26 minimum_required_edge_bps addition).
+    bump_initial_bps: float = 50.0
+    bump_halflife_sessions: float = 3.0
+    bump_deactivate_threshold_bps: float = 1.0  # decay below this = penalty.active=false
+    # Operational — Alpaca rate limiting.
+    submit_batch_size: int = 20
+    submit_pause_ms: int = 200
+    # PDT interaction — never submit a stop on entry day (would fire as day trade).
+    entry_day_exempt: bool = True
+
+
 class UniverseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     min_price: float
@@ -345,6 +386,7 @@ class JuniAutoConfig(BaseModel):
     costs: CostsConfig
     sizing: SizingConfig
     regime: RegimeConfig = Field(default_factory=RegimeConfig)
+    stops: StopsConfig = Field(default_factory=StopsConfig)
     shadow: ShadowConfig
     freshness_halflife_days: dict[str, int]
     universe: UniverseConfig
