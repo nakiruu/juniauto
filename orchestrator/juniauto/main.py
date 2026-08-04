@@ -1309,13 +1309,103 @@ class JuniAuto:
         # Retrain ridge on any newly-resolved rows (EXECUTIONS only; phantom
         # returns intentionally excluded to avoid using our own predictions
         # as training labels).
+        #
+        # When new samples land, immediately recompute trailing stops on the
+        # fresh posterior — cheaper than an unconditional hourly stop cycle
+        # because it only fires when there's genuinely new information to
+        # act on. Uses cycle_type='model_update' which maps to hysteresis-
+        # REPLACE mode in the manager (bounded churn via should_replace).
         try:
-            n_trained = self.bayes.retrain_from_db(source="resolution")
-            log.info("resolution_bayes_retrained", n_samples=n_trained)
+            n_before = self.bayes.n_samples
+            n_after = self.bayes.retrain_from_db(source="resolution")
+            log.info("resolution_bayes_retrained", n_samples=n_after)
+            if n_after > n_before and self.cfg.stops.enabled:
+                try:
+                    self._trigger_stops_after_retrain(
+                        now_utc=datetime.now(tz=ET),
+                        n_new_samples=n_after - n_before,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.warning(
+                        "resolution_stops_model_update_failed",
+                        error=str(e), error_type=type(e).__name__,
+                    )
         except Exception as e:  # noqa: BLE001
             log.warning("resolution_bayes_retrain_failed", error=str(e))
 
         log.info("resolution_end")
+
+    # ---- Model-triggered stop recompute ----
+    def _trigger_stops_after_retrain(
+        self, *, now_utc: datetime, n_new_samples: int
+    ) -> None:
+        """Fires from _resolution_loop when the Bayesian retrain gained new
+        resolved rows. Fetches a fresh snapshot for held names only, computes
+        features + predictions on the just-updated posterior, then runs the
+        stop manager in hysteresis-REPLACE mode.
+
+        This is the "option 3" alternative to hourly scheduled stop cycles:
+        same responsiveness to new posterior info, but zero cost on cycles
+        where nothing changed. Never runs on cold-start (Bayesian untrained).
+        """
+        if not self.bayes.is_trained():
+            log.info("stops_model_update_skip_untrained")
+            return
+        positions = self.alpaca.get_positions()
+        if not positions:
+            log.info("stops_model_update_no_positions")
+            return
+
+        held_symbols = [p["symbol"] for p in positions]
+        try:
+            snap = self.aggregator.snapshot(held_symbols, now_utc)
+        except Exception as e:  # noqa: BLE001
+            log.warning("stops_model_update_snapshot_failed",
+                        error=str(e), error_type=type(e).__name__)
+            return
+
+        try:
+            features = compute_all(
+                bars=snap.bars_df(),
+                fundamentals=snap.fundamentals,
+                quotes=snap.quotes,
+                as_of_date=now_utc.date(),
+                halflife_event_days=self.cfg.freshness_halflife_days["event"],
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("stops_model_update_features_failed", error=str(e))
+            return
+
+        predictions: list[dict[str, object]] = []
+        for sym in features.index:
+            try:
+                mu, sig = self.bayes.predict(features.loc[sym])
+            except Exception:  # noqa: BLE001
+                mu, sig = 0.0, 0.0
+            predictions.append({
+                "symbol": str(sym),
+                "role": "primary",
+                "mu_edge_bps": float(mu),
+                "sigma_total_bps": float(sig),
+                "composite_edge_bps": float(mu),
+                "friction_multiplier": float(self.cfg.model.friction_seed_primary),
+            })
+
+        m.stops_model_update_triggers_total.inc()
+        log.info(
+            "stops_model_update_trigger",
+            n_new_samples=n_new_samples,
+            n_positions=len(positions),
+            total_samples=self.bayes.n_samples,
+        )
+        self._manage_stops(
+            cycle_type="model_update",
+            positions=positions,
+            snap=snap,
+            features=features,
+            predictions=predictions,
+            now=now_utc,
+        )
 
     def _persist_account_snapshot(self) -> None:
         """Snapshot equity/cash/PDT + open positions to QuestDB (§3.1)."""

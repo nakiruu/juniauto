@@ -258,6 +258,14 @@ stops_skipped_market_too_close_total: Counter = Counter(
     "position has already broken through the chandelier / posterior level.",
 )
 
+stops_model_update_triggers_total: Counter = Counter(
+    "juniauto_stops_model_update_triggers_total",
+    "Cumulative model-triggered stop recompute cycles. Fires from the hourly "
+    "resolution loop only when the Bayesian retrain gained new resolved rows "
+    "(posterior actually shifted). Cheaper alternative to hourly scheduled "
+    "cycles because it only runs when there's new information to act on.",
+)
+
 
 # ---- Convenience helper ----
 
