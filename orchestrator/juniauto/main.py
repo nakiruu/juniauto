@@ -675,16 +675,25 @@ class JuniAuto:
         with target_weight / current_weight / delta_weight / rebalance_kind, and
         emit the reweight metrics (drift / turnover / HHI / shadow-EV delta)."""
         # Build Candidate list from the actions themselves — every action dict
-        # now carries composite_edge_bps and sigma_total_bps propagated from
-        # step 4's Bayesian predictions. Kelly numerator = composite (positive,
-        # spec-§2.22a). Kelly denominator = realized daily vol (per-symbol).
-        # See step-4 comment for the deviation-from-§2.6 rationale.
+        # carries mu_edge_bps (raw Bayesian μ) and composite_edge_bps (μ +
+        # membership × friction) propagated from step 4's Bayesian predictions.
+        #
+        # Kelly sizing uses μ, NOT composite (signal_separation audit Fix 1,
+        # 2026-08-07). The composite has a +138 bps floor from membership
+        # (460 × 0.30) that swamps the ±15 bps μ range — raw Kelly scores
+        # collapse to nearly-tied constants and allocation degenerates to
+        # equal-weight regardless of dispersion in the model signal. Using
+        # μ directly makes higher-conviction predictions get proportionally
+        # larger weight. Composite still gates the gateway (§2.22a) upstream.
+        #
+        # Kelly denominator = realized daily vol (per-symbol). See step-4
+        # comment for the deviation-from-§2.6 rationale.
         action_by_sym = {str(a["symbol"]): a for a in gw_actions}
         executed_syms = [s for s, a in action_by_sym.items() if a["executed"]]
         candidates = [
             Candidate(
                 symbol=sym,
-                conservative_edge_bps=float(action_by_sym[sym].get("composite_edge_bps", 138.0)),
+                conservative_edge_bps=float(action_by_sym[sym].get("mu_edge_bps", 0.0)),
                 sigma_total_bps=float(action_by_sym[sym].get("sigma_total_bps", 0.0)),
             )
             for sym in executed_syms
@@ -694,15 +703,46 @@ class JuniAuto:
         # Coordinator design: hard cap on holdings once edges are meaningfully
         # differentiated. Cold-start (CV below threshold) falls back to the
         # uncapped scheme so a broken selector cannot halt the live loop.
-        cv = edges_cv(candidates)
+        #
+        # Two CVs are meaningful now:
+        #   sizing_cv = CV of μ across candidates. Used for observability only.
+        #               Typically LARGE (μ mean ≈ 0, std ≈ 5-10 bps → CV ≫ 1).
+        #   top_k_cv  = CV of composite_edge across candidates. Used for the
+        #               top-K activation gate. Composite is bounded away from
+        #               zero by the membership prior, so its CV stays around
+        #               0.05-0.10 — preserves the current-live behavior where
+        #               top-K stays silently disabled at ~186 positions.
+        # If we gated top-K on sizing_cv instead, it would silently activate
+        # (CV ≫ threshold) and collapse the portfolio from 186 to max_holdings
+        # (8). That is a much bigger design change and not what this fix is
+        # for — the goal here is proper Kelly dispersion, not concentration.
+        sizing_cv = edges_cv(candidates)
+        composite_edges = np.array(
+            [float(action_by_sym[sym].get("composite_edge_bps", 138.0))
+             for sym in executed_syms],
+            dtype=float,
+        )
+        if composite_edges.size >= 2:
+            mean_abs = float(np.abs(composite_edges).mean())
+            top_k_cv = float(composite_edges.std() / mean_abs) if mean_abs > 0.0 else 0.0
+        else:
+            top_k_cv = 0.0
         top_k_active = (
             self.bayes.is_trained()
-            and cv >= float(self.cfg.sizing.top_k_activation_cv_threshold)
+            and top_k_cv >= float(self.cfg.sizing.top_k_activation_cv_threshold)
             and len(candidates) > int(self.cfg.sizing.max_holdings)
         )
         # Observability: emit selector state to Prometheus regardless of gate.
-        m.edges_cv_gauge.set(cv)
+        # edges_cv_gauge historically means "top-K gate CV" — keep that semantic
+        # so existing Grafana panels don't break.
+        m.edges_cv_gauge.set(top_k_cv)
         m.top_k_active_gauge.set(1.0 if top_k_active else 0.0)
+        log.info(
+            "sizing_cv_observed",
+            sizing_cv=round(sizing_cv, 4),
+            top_k_cv=round(top_k_cv, 4),
+            note="sizing uses mu_edge_bps (audit Fix 1); top-K gate uses composite",
+        )
 
         if top_k_active:
             incumbents = {s for s, w in current_weights.items() if w > 0}
@@ -718,7 +758,8 @@ class JuniAuto:
             log.info(
                 "top_k_active",
                 k=len(surviving),
-                cv=round(cv, 4),
+                top_k_cv=round(top_k_cv, 4),
+                sizing_cv=round(sizing_cv, 4),
                 n_dropped=len(candidates) - len(surviving),
                 incumbents_kept=n_incumbents_kept,
                 incumbents_displaced=len(incumbents) - n_incumbents_kept,
@@ -729,7 +770,8 @@ class JuniAuto:
             log.info(
                 "top_k_skipped",
                 bayes_trained=self.bayes.is_trained(),
-                cv=round(cv, 4),
+                top_k_cv=round(top_k_cv, 4),
+                sizing_cv=round(sizing_cv, 4),
                 cv_threshold=float(self.cfg.sizing.top_k_activation_cv_threshold),
                 n_candidates=len(candidates),
                 max_holdings=int(self.cfg.sizing.max_holdings),
